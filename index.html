@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>视频提取器 · 安装与更新</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 28px 18px 60px;
+    font: 15px/1.65 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #0f1115; color: #e6e9ef;
+  }
+  .wrap { max-width: 620px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #8b93a1; font-size: 13px; margin-bottom: 22px; }
+  .card {
+    background: #171a20; border: 1px solid #232833; border-radius: 14px;
+    padding: 18px; margin-bottom: 14px;
+  }
+  .ver { display: inline-block; font-size: 12px; padding: 2px 9px; border-radius: 20px;
+    background: #1d3a5f; color: #7fbcf5; margin-left: 6px; vertical-align: 2px; }
+  a.btn {
+    display: block; text-align: center; text-decoration: none;
+    background: #2f6fd0; color: #fff; font-weight: 600;
+    padding: 14px; border-radius: 11px; margin: 14px 0 8px;
+  }
+  a.btn:active { background: #2a63ba; }
+  .url {
+    font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
+    background: #0b0d11; border: 1px solid #232833; border-radius: 9px;
+    padding: 10px 12px; color: #9fb6d4; word-break: break-all;
+  }
+  ol { padding-left: 20px; margin: 10px 0 0; }
+  li { margin: 7px 0; }
+  .tip { color: #8b93a1; font-size: 12.5px; }
+  code { background: #0b0d11; padding: 1px 5px; border-radius: 5px; font-size: 12.5px; }
+  .k { color: #ffd479; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>视频提取器 <span class="ver" id="ver">v—</span></h1>
+  <div class="sub">自动接管网页播放器 · 手势拖动 · 多线程下载</div>
+
+  <div class="card">
+    <div style="font-weight:600;margin-bottom:2px">在 X浏览器 里安装</div>
+    <a class="btn" id="install" href="video-extractor.user.js">点这里安装 / 更新脚本</a>
+    <div class="url" id="url">…</div>
+    <div class="tip" style="margin-top:10px">
+      如果上面按钮点了只是打开代码，就长按复制下面的地址，到 X浏览器里
+      <span class="k">菜单 → 脚本 → 从网址安装</span> 粘贴。
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="font-weight:600;margin-bottom:6px">以后怎么更新</div>
+    <ol>
+      <li>X浏览器会按脚本里的 <code>@updateURL</code> 定期检查，有新版本会提示。</li>
+      <li>也可以随时回到这个页面，点上面那个按钮覆盖安装一次。</li>
+      <li>更新不会丢设置（设置存在本地，跟脚本文件分开）。</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <div style="font-weight:600;margin-bottom:6px">这个页面就是更新源</div>
+    <div class="tip">
+      脚本地址固定不变，每次我发布新版本，这里的内容会跟着变，
+      你不需要重新找链接。
+    </div>
+  </div>
+</div>
+<script>
+  // 版本号从脚本头部读出来，避免两处对不上
+  fetch('video-extractor.user.js', { cache: 'no-store' })
+    .then(function (r) { return r.text(); })
+    .then(function (t) {
+      var m = t.match(/@version\s+([\w.\-]+)/);
+      if (m) document.getElementById('ver').textContent = 'v' + m[1];
+    })
+    .catch(function () {});
+  document.getElementById('url').textContent = location.origin + location.pathname.replace(/[^/]*$/, '') + 'video-extractor.user.js';
+</script>
+</body>
+</html>
