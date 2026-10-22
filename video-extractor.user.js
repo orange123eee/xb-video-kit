@@ -1,15 +1,15 @@
 // ==UserScript==
 // @name         视频提取器 · 万能播放/下载
 // @namespace    local.xbrowser.videokit
-// @version      2.6.5
+// @version      2.6.6
 // @description  自动嗅探网页视频（直链 / m3u8 / MSE 流），自带播放器（倍速、清晰度切换、全片拖动），多线程下载并合并为 mp4。
 // @author       me
 // @match        *://*/*
 // @match        file:///*
 // @run-at       document-start
 // @grant        none
-// @updateURL    https://raw.githubusercontent.com/orange123eee/xb-video-kit/main/video-extractor.user.js
-// @downloadURL  https://raw.githubusercontent.com/orange123eee/xb-video-kit/main/video-extractor.user.js
+// @updateURL    https://cdn.jsdelivr.net/gh/orange123eee/xb-video-kit@main/video-extractor.user.js
+// @downloadURL  https://cdn.jsdelivr.net/gh/orange123eee/xb-video-kit@main/video-extractor.user.js
 // ==/UserScript==
 
 // 设计参考（开源实现，只借鉴思路，未引入运行时依赖）：
@@ -28,7 +28,7 @@
   try { IS_TOP = (window.top === window.self); } catch (e) { IS_TOP = false; }
 
   var MAX_ITEMS = 40;
-  var VERSION = '2.6.5';
+  var VERSION = '2.6.6';
 
   // ---- 设置 ----
   var CFG_KEY = 'xbvk.cfg';
@@ -648,7 +648,7 @@
     '.ft .ver{font-style:normal;font-size:10px;color:#5d6470;flex:none}',
     '.ft button{flex:1;height:38px;border-radius:10px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);',
     'color:#cfd5de;font-size:13px}',
-    '.pl{position:fixed;inset:0;background:#000;display:none;flex-direction:column;pointer-events:auto;z-index:3}',
+    '.pl{position:fixed;inset:0;background:#000;display:none;flex-direction:column;pointer-events:auto;z-index:3;overscroll-behavior:contain}',
     '.pl.open{display:flex}',
     '.pl.embed{border-radius:10px;overflow:hidden;box-shadow:0 10px 34px rgba(0,0,0,.55)}',
     '.pl .top{display:flex;align-items:center;gap:8px;padding:calc(8px + env(safe-area-inset-top)) 12px 8px;',
@@ -1553,6 +1553,16 @@
       } catch (e) {}
     }
 
+    // "缓冲中…" 可能因为没触发 playing 而一直挂着，多几个清除时机
+    var clearBufText = function () {
+      var st = playerEl && playerEl.querySelector('.stat');
+      if (st && st.textContent === '缓冲中…') st.textContent = '';
+    };
+    videoEl.addEventListener('seeked', clearBufText);
+    videoEl.addEventListener('timeupdate', function () {
+      if (!videoEl.paused) clearBufText();
+    });
+
     // 记住看到哪了：暂停时、以及播放中每 6 秒存一次
     videoEl.addEventListener('pause', function () {
       if (current) savePlayPos(current, curPos());
@@ -1591,9 +1601,9 @@
     videoEl.addEventListener('playing', function () {
       if (playerEl) playerEl.classList.remove('loading');
       clearTimeout(loadTimer);
-      var st = playerEl && playerEl.querySelector('.stat');
-      if (st && st.textContent === '缓冲中…') st.textContent = '';
-      if (hls) hls.retried = false;      // 正常出画，重置"自动修复"次数
+      var st0 = playerEl && playerEl.querySelector('.stat');
+      if (st0 && st0.textContent === '缓冲中…') st0.textContent = '';
+      if (hls) { hls.retried = false; hls.everPlayed = true; hls.recover = 0; }
       if (!playerOpen || !siteVideo) return;
       try {
         siteVideo.pause();
@@ -1607,19 +1617,30 @@
       var e = videoEl.error;
       if (!e) return;
 
-      // 解码类错误（3/4）多半是跳转后时间轴错乱，重建一次通常就好了
+      // 解码类错误（3/4）多半是跳转后时间轴错乱，先自己修，别急着销毁播放器
       if ((e.code === 3 || e.code === 4) && hls) {
         // 第一步：如果现在是"直接吃 mp2t"，换成自己转封装
         if (!hls.transmux && !hls.triedTransmux) {
-          toast('这个封装内核放不了，正在换一种方式…');
-          hls.forceTransmux(curPos()).catch(function () {});
+          hls.triedTransmux = true;
+          toast('换个解码方式…');
+          hls.forceTransmux(Math.max(0, curPos())).catch(function () {});
           return;
         }
-        // 第二步：还不行就从头重建一次
+        // 第二步：已经正常播过的，只在原地重建，绝不关掉播放器
+        if (hls.everPlayed) {
+          if ((hls.recover || 0) < 3) {
+            hls.recover = (hls.recover || 0) + 1;
+            toast('画面出错，正在恢复…');
+            hls.reloadAt(Math.max(0, curPos())).catch(function () {});
+            return;
+          }
+          toast('播放出错，拖一下进度条可以重试');
+          return;
+        }
+        // 第三步：刚打开就失败，再重建一次
         if (!hls.retried) {
           hls.retried = true;
-          toast('画面出错，正在重新加载…');
-          hls.reloadAt(curPos()).catch(function () {});
+          hls.reloadAt(Math.max(0, curPos())).catch(function () {});
           return;
         }
       }
