@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         视频提取器 · 万能播放/下载
 // @namespace    local.xbrowser.videokit
-// @version      2.6.4
+// @version      2.6.5
 // @description  自动嗅探网页视频（直链 / m3u8 / MSE 流），自带播放器（倍速、清晰度切换、全片拖动），多线程下载并合并为 mp4。
 // @author       me
 // @match        *://*/*
 // @match        file:///*
 // @run-at       document-start
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/orange123eee/xb-video-kit/main/video-extractor.user.js
+// @downloadURL  https://raw.githubusercontent.com/orange123eee/xb-video-kit/main/video-extractor.user.js
 // ==/UserScript==
 
 // 设计参考（开源实现，只借鉴思路，未引入运行时依赖）：
@@ -26,7 +28,7 @@
   try { IS_TOP = (window.top === window.self); } catch (e) { IS_TOP = false; }
 
   var MAX_ITEMS = 40;
-  var VERSION = '2.6.4';
+  var VERSION = '2.6.5';
 
   // ---- 设置 ----
   var CFG_KEY = 'xbvk.cfg';
