@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频提取器 · 万能播放/下载
 // @namespace    local.xbrowser.videokit
-// @version      2.6.7
+// @version      2.6.8
 // @description  自动嗅探网页视频（直链 / m3u8 / MSE 流），自带播放器（倍速、清晰度切换、全片拖动），多线程下载并合并为 mp4。
 // @author       me
 // @match        *://*/*
@@ -16,6 +16,7 @@
 //   - 猫抓 cat-catch / js/m3u8.downloader.js：多线程分片下载、按 index 归并、AbortController 中断、退避重试
 //   - puemos/hls-downloader / m3u8-parser.ts：EXT-X-BYTERANGE、EXT-X-MAP、逐片 EXT-X-KEY 轮换
 //   - video-dev/hls.js：点播显式设置 MediaSource.duration 以扩展 seekable、按播放位置切换码率
+//   - Plyr / Video.js / DPlayer / xgplayer：拖动时冻结进度更新、记录 pendingSeekTime、touchcancel 还原
 // 唯一的外部资源：转封装时按需加载 mux.js（CDN，失败自动回退存 .ts）。
 
 (function () {
@@ -681,7 +682,7 @@
     '.pl .ctl{position:absolute;left:0;right:0;bottom:0;z-index:4;padding:30px 14px calc(10px + env(safe-area-inset-bottom));',
     'background:linear-gradient(transparent,rgba(0,0,0,.9));transition:opacity .25s}',
     '.pl.hideui .top,.pl.hideui .ctl{opacity:0;pointer-events:none}',
-    '.pl .seek{position:relative;height:28px;display:flex;align-items:center;touch-action:none;margin-bottom:2px}',
+    '.pl .seek{position:relative;height:32px;display:flex;align-items:center;touch-action:none;cursor:pointer;margin-bottom:2px}',
     '.pl .seek .track{position:absolute;left:0;right:0;height:4px;border-radius:2px;background:rgba(255,255,255,.24)}',
     '.pl .seek .buf{position:absolute;left:0;width:0;height:4px;border-radius:2px;background:rgba(255,255,255,.34)}',
     '.pl .seek .bar{position:absolute;left:0;width:0;height:4px;border-radius:2px;background:#3ea6ff}',
@@ -748,7 +749,7 @@
     '.pl .top{padding:calc(6px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) 6px calc(16px + env(safe-area-inset-left))}',
     '.pl .ctl{padding:22px calc(18px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) calc(18px + env(safe-area-inset-left))}',
     '.pl .side{right:calc(14px + env(safe-area-inset-right));bottom:calc(74px + env(safe-area-inset-bottom))}',
-    '.pl .seek{height:24px}',
+    '.pl .seek{height:28px}',
     '.pl .bigplay{width:58px;height:58px;margin:-29px 0 0 -29px}',
     '}'
   ].join('');
@@ -929,22 +930,28 @@
   }
   function syncProgress() {
     if (!playerOpen || !playerEl || !videoEl) return;
-    var dur = playerDur();
-    var pos = Math.max(0, (videoEl.currentTime || 0) - playerOff());
-    var pct;
+    if (seekBusy()) return;      // 手指按在进度条上时，播放事件不许改滑块
 
-    if (seekLockUntil && dur) {
-      var want = seekLockRatio * dur;
-      if (Date.now() > seekLockUntil || Math.abs(pos - want) < 1.0) {
-        seekLockUntil = 0;                        // 到位了，解锁
-        pct = Math.min(1, pos / dur);
+    var dur = playerDur();
+    if (dur > 0) seekUI.lastDur = dur;
+    var pos = Math.max(0, (videoEl.currentTime || 0) - playerOff());
+    var wasPending = seekUI.pending;
+
+    if (seekUI.pending) {
+      var want = seekUI.target;
+      var near = dur > 0 && !videoEl.seeking && Math.abs(pos - want) < 1.0;
+      if (near || Date.now() - seekUI.pendingAt > 10000) {
+        seekUI.pending = false;                   // 到位了（或等太久），恢复跟播放走
       } else {
-        pct = seekLockRatio;                      // 还停在用户拖到的位置
+        // HLS 重建时 duration 会短暂变 NaN；沿用上次已知时长，
+        // 别让进度条和“当前时间”一起掉回 0（Video.js 的 pendingSeekTime 同理）
         pos = want;
+        dur = dur || seekUI.lastDur;
       }
-    } else {
-      pct = dur ? Math.min(1, pos / dur) : 0;
     }
+    if (wasPending && !seekUI.pending) showUI();
+
+    var pct = dur ? Math.min(1, Math.max(0, pos / dur)) : 0;
 
     var bar = playerEl.querySelector('.seek .bar');
     var knob = playerEl.querySelector('.seek .knob');
@@ -989,13 +996,31 @@
     var d = playerEl && playerEl.querySelector('.dim');
     if (d) d.style.opacity = String(((1 - brightVal) * 0.85).toFixed(3));
   }
-  // 拖动松手后，seek 还没生效前先用这个锁住进度条显示，避免它跳回旧位置
-  var seekLockUntil = 0, seekLockRatio = 0;
+  // 进度条交互状态：拖动中、以及松手后等待跳转落地时，进度显示由这里接管。
+  // 否则播放中的 timeupdate 会不断把滑块拽回当前位置（Plyr / Video.js 都用同类状态）。
+  var seekUI = {
+    dragging: false, gesture: false,
+    ratio: 0, target: 0,
+    pending: false, pendingAt: 0,
+    lastDur: 0, touchId: null, lastTouchAt: 0
+  };
+  function seekBusy() { return seekUI.dragging || seekUI.gesture; }
+  function resetSeekUI() {
+    seekUI.dragging = false;
+    seekUI.gesture = false;
+    seekUI.pending = false;
+    seekUI.pendingAt = 0;
+    seekUI.ratio = 0;
+    seekUI.target = 0;
+    seekUI.lastDur = 0;
+    seekUI.touchId = null;
+  }
   function showUI() {
     if (!playerEl) return;
     playerEl.classList.remove('hideui');
     clearTimeout(uiHideTimer);
     uiHideTimer = setTimeout(function () {
+      if (seekBusy() || seekUI.pending) return;   // 拖动/跳转中不要藏控件
       // 只有全屏时才自动隐藏控件；嵌在网页播放框里就常驻，否则用户不知道能点
       if (playerOpen && videoEl && !videoEl.paused && !playerEl.classList.contains('embed')) {
         playerEl.classList.add('hideui');
@@ -1371,6 +1396,10 @@
           if (Math.abs(dx) > 16 && Math.abs(dx) >= Math.abs(dy)) {
             stMode = 'seek';
             clearTimeout(pressTimer);
+            // 画面横拖同样由 seekUI 接管进度显示，防止播放事件把预览位置拽回去
+            seekUI.pending = false;
+            seekUI.gesture = true;
+            showUI();
           } else if (allowVB && Math.abs(dy) > 16 && Math.abs(dy) > Math.abs(dx)) {
             stMode = stX < stW / 2 ? 'bri' : 'vol';
             clearTimeout(pressTimer);
@@ -1381,11 +1410,11 @@
         if (stMode === 'seek') {
           stDrag = true;
           var dur = playerDur();
-          if (!dur) return;
+          if (!dur) { seekUI.gesture = false; return; }
           // 一个屏幕宽度大约对应 180 秒，长片也不会太灵敏
           var span = Math.min(dur, 180);
           previewAt(Math.max(0, Math.min(dur, stT + (dx / stW) * span)));
-          if (hls) hls.prefetchAt(stTarget);   // 拖的时候就先把目标分片拉下来
+          paintSeek(stTarget / dur);   // 进度条跟着手势走（分片预取也在里面）
         } else if (stMode === 'vol') {
           var v = Math.max(0, Math.min(1, stVol - dy / (stH * 0.7)));
           try { videoEl.volume = v; videoEl.muted = false; } catch (err) {}
@@ -1414,6 +1443,7 @@
           hidePreview();
           var dur = playerDur();
           if (dur) commitSeek(Math.max(0, Math.min(1, stTarget / dur)));
+          else { seekUI.gesture = false; syncProgress(); }
           return;
         }
         // 调音量/亮度结束，不算点击
@@ -1453,6 +1483,7 @@
         stDrag = false;
         stMode = '';
         hidePreview();
+        if (seekUI.gesture) { seekUI.gesture = false; syncProgress(); showUI(); }
       });
 
       // 鼠标/桌面：touch 已经处理过的 600ms 内不再响应，避免重复
@@ -1464,75 +1495,136 @@
     }
 
     var seekBar = playerEl.querySelector('.seek');
-    var seeking = false, seekRatio = 0;
 
     function seekRatioAt(x) {
       var r = seekBar.getBoundingClientRect();
       return Math.max(0, Math.min(1, (x - r.left) / (r.width || 1)));
     }
     function paintSeek(ratio) {
+      ratio = Math.max(0, Math.min(1, ratio));
+      var dur = playerDur();
+      if (dur > 0) seekUI.lastDur = dur;
+      var shownDur = dur || seekUI.lastDur;
+      seekUI.ratio = ratio;
+      seekUI.target = ratio * shownDur;
       var bar = playerEl.querySelector('.seek .bar');
       var knob = playerEl.querySelector('.seek .knob');
       if (bar) bar.style.width = (ratio * 100).toFixed(2) + '%';
       if (knob) knob.style.left = (ratio * 100).toFixed(2) + '%';
-      var dur = playerDur();
       var tm = playerEl.querySelector('.tm');
-      if (tm) tm.textContent = fmtTime(ratio * dur) + ' / ' + fmtTime(dur);
+      if (tm) tm.textContent = fmtTime(seekUI.target) + ' / ' + fmtTime(shownDur);
       // 拖动时预取目标分片，松手就能立刻出画
-      if (hls && dur) hls.prefetchAt(ratio * dur);
+      if (hls && seekUI.target) hls.prefetchAt(seekUI.target);
     }
     function commitSeek(ratio) {
-      var dur = playerDur();
-      if (!dur) return;
-      var t = ratio * dur;
-      // 先锁住显示，等 seek 真正落地再解锁
-      seekLockRatio = ratio;
-      seekLockUntil = Date.now() + 4000;
-      paintSeek(ratio);
-      if (hls && hls.seekTo) hls.seekTo(t);
-      else { try { videoEl.currentTime = t; } catch (e) {} }
+      var dur = playerDur() || seekUI.lastDur;
+      if (!dur) {
+        seekUI.dragging = false; seekUI.gesture = false;
+        seekUI.touchId = null; seekUI.pending = false;
+        syncProgress();
+        return;
+      }
+      var t = Math.max(0, Math.min(dur, ratio * dur));
+      seekUI.dragging = false;
+      seekUI.gesture = false;
+      seekUI.touchId = null;
+      seekUI.ratio = t / dur;
+      seekUI.target = t;
+      seekUI.pending = true;
+      seekUI.pendingAt = Date.now();
+      seekUI.lastDur = dur;
+      paintSeek(seekUI.ratio);
+      var cur = Math.max(0, (videoEl.currentTime || 0) - playerOff());
+      if (Math.abs(cur - t) < 0.2 && !videoEl.seeking) {
+        seekUI.pending = false;                    // 点的就是当前位置，不用真跳
+      } else if (hls && hls.seekTo) {
+        hls.seekTo(t);
+      } else {
+        try { videoEl.currentTime = t; } catch (e) {}
+      }
       showUI();
+      if (!seekUI.pending) syncProgress();
+    }
+    function seekDragStart(x) {
+      if (seekUI.dragging) return false;
+      if (!playerDur() && !seekUI.lastDur) return false;
+      seekUI.dragging = true;
+      seekUI.pending = false;
+      seekUI.ratio = seekRatioAt(x);
+      showUI();
+      paintSeek(seekUI.ratio);
+      return true;
+    }
+    function seekDragEnd(commit, x) {
+      if (!seekUI.dragging) return;
+      if (x != null) paintSeek(seekRatioAt(x));
+      seekUI.dragging = false;
+      seekUI.touchId = null;
+      if (commit) commitSeek(seekUI.ratio);
+      else { seekUI.pending = false; syncProgress(); showUI(); }
+    }
+    function touchById(list, id) {
+      if (!list) return null;
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].identifier === id) return list[i];
+      }
+      return (id == null && list.length) ? list[0] : null;
     }
     if (seekBar) {
       seekBar.addEventListener('touchstart', function (e) {
+        if (e.touches.length > 1) return;
         var t0 = e.touches[0];
         if (!t0) return;
-        seeking = true;
-        seekRatio = seekRatioAt(t0.clientX);
-        paintSeek(seekRatio);
+        seekUI.lastTouchAt = Date.now();
+        seekUI.touchId = t0.identifier;
+        if (!seekDragStart(t0.clientX)) return;
         e.preventDefault();
+        e.stopPropagation();
       }, { passive: false });
       seekBar.addEventListener('touchmove', function (e) {
-        if (!seeking) return;
-        var t0 = e.touches[0];
+        if (!seekUI.dragging) return;
+        var t0 = touchById(e.touches, seekUI.touchId);
         if (!t0) return;
-        seekRatio = seekRatioAt(t0.clientX);
-        paintSeek(seekRatio);
+        paintSeek(seekRatioAt(t0.clientX));
         e.preventDefault();
+        e.stopPropagation();
       }, { passive: false });
-      seekBar.addEventListener('touchend', function () {
-        if (!seeking) return;
-        seeking = false;
-        commitSeek(seekRatio);
+      seekBar.addEventListener('touchend', function (e) {
+        if (!seekUI.dragging) return;
+        seekUI.lastTouchAt = Date.now();
+        var t0 = touchById(e.changedTouches, seekUI.touchId);
+        if (!t0) return;                           // 抬的是另一根手指
+        seekDragEnd(true, t0.clientX);
+      });
+      seekBar.addEventListener('touchcancel', function () {
+        if (!seekUI.dragging) return;
+        seekUI.lastTouchAt = Date.now();
+        seekDragEnd(false);                        // 被系统打断：还原，不提交
       });
       seekBar.addEventListener('mousedown', function (e) {
-        seeking = true;
-        seekRatio = seekRatioAt(e.clientX);
-        paintSeek(seekRatio);
+        if (e.button !== 0) return;
+        if (Date.now() - seekUI.lastTouchAt < 700) return;   // 触屏后的合成鼠标事件
+        if (!seekDragStart(e.clientX)) return;
+        e.preventDefault();
       });
       window.addEventListener('mousemove', function (e) {
-        if (!seeking) return;
-        seekRatio = seekRatioAt(e.clientX);
-        paintSeek(seekRatio);
+        if (!seekUI.dragging) return;
+        if (typeof e.buttons === 'number' && (e.buttons & 1) === 0) {
+          seekDragEnd(false);                      // 在窗口外松开了，别卡在拖动态
+          return;
+        }
+        paintSeek(seekRatioAt(e.clientX));
       });
-      window.addEventListener('mouseup', function () {
-        if (!seeking) return;
-        seeking = false;
-        commitSeek(seekRatio);
+      window.addEventListener('mouseup', function (e) {
+        if (!seekUI.dragging) return;
+        seekDragEnd(true, e.clientX);
+      });
+      window.addEventListener('blur', function () {
+        if (seekUI.dragging) seekDragEnd(false);
       });
     }
 
-    var evs = ['timeupdate', 'progress', 'durationchange', 'play', 'pause', 'loadedmetadata'];
+    var evs = ['timeupdate', 'progress', 'durationchange', 'play', 'pause', 'loadedmetadata', 'seeked'];
     for (var ei = 0; ei < evs.length; ei++) {
       videoEl.addEventListener(evs[ei], function () { syncProgress(); });
     }
@@ -1981,6 +2073,7 @@
   function openPlayer(title, rect) {
     buildUI();
     playerOpen = true;
+    resetSeekUI();
     playerHiddenForSheet = false;
     // 加载中先透出网页原本的画面，别一上来就黑屏
     playerEl.classList.add('loading');
@@ -2033,6 +2126,7 @@
 
   function closePlayer() {
     if (current) savePlayPos(current, curPos());
+    resetSeekUI();
     if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
     try {
       videoEl.pause();
