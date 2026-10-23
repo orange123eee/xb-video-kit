@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频提取器 · 万能播放/下载
 // @namespace    local.xbrowser.videokit
-// @version      2.6.8
+// @version      2.6.9
 // @description  自动嗅探网页视频（直链 / m3u8 / MSE 流），自带播放器（倍速、清晰度切换、全片拖动），多线程下载并合并为 mp4。
 // @author       me
 // @match        *://*/*
@@ -15,7 +15,8 @@
 // 设计参考（开源实现，只借鉴思路，未引入运行时依赖）：
 //   - 猫抓 cat-catch / js/m3u8.downloader.js：多线程分片下载、按 index 归并、AbortController 中断、退避重试
 //   - puemos/hls-downloader / m3u8-parser.ts：EXT-X-BYTERANGE、EXT-X-MAP、逐片 EXT-X-KEY 轮换
-//   - video-dev/hls.js：点播显式设置 MediaSource.duration 以扩展 seekable、按播放位置切换码率
+//   - video-dev/hls.js：点播显式设置 MediaSource.duration 以扩展 seekable、按播放位置切换码率、
+//     跳转时复用同一个 MSE（换 Transmuxer 续写，不清空已缓冲画面）
 //   - Plyr / Video.js / DPlayer / xgplayer：拖动时冻结进度更新、记录 pendingSeekTime、touchcancel 还原
 // 唯一的外部资源：转封装时按需加载 mux.js（CDN，失败自动回退存 .ts）。
 
@@ -663,8 +664,9 @@
     '.pl.embed.loading{background:transparent}',
     '.pl.embed.loading video{background:transparent}',
     '.pl.loading .bigplay,.pl.loading .ctl,.pl.loading .top,.pl.loading .side{opacity:0;pointer-events:none}',
-    '.pl .spin{position:absolute;left:50%;top:50%;width:32px;height:32px;margin:-16px 0 0 -16px;border-radius:50%;',
-    'border:2.5px solid rgba(255,255,255,.22);border-top-color:rgba(255,255,255,.9);animation:xbspin .8s linear infinite;',
+    '.pl .spin{position:absolute;left:50%;top:50%;width:34px;height:34px;margin:-17px 0 0 -17px;border-radius:50%;',
+    'border:3px solid rgba(255,255,255,.25);border-top-color:#fff;background:rgba(0,0,0,.38);',
+    'box-shadow:0 2px 14px rgba(0,0,0,.55);animation:xbspin .8s linear infinite;',
     'display:none;z-index:6}',
     '.pl.loading .spin{display:block}',
     '@keyframes xbspin{to{transform:rotate(360deg)}}',
@@ -675,6 +677,13 @@
     '.pl.paused .bigplay{display:flex}',
     // 加载中不显示大播放键（此时还没内容，显示它反而像卡住了）
     '.pl.loading .bigplay{display:none}',
+    // 跳转/缓冲中：保留控件，只把大播放键换成转圈（否则会被误认为已暂停）
+    '.pl.seeking .bigplay{display:none!important}',
+    '.pl.seeking .spin{display:block}',
+    '.pl.buffering .bigplay{display:none!important}',
+    '.pl.buffering .spin{display:block}',
+    // 重建 MSE 前把最后一帧留在画面上，加载期间不黑屏
+    '.pl .freeze{position:absolute;left:0;top:0;width:100%;height:100%;object-fit:contain;display:none;z-index:1;pointer-events:none}',
     '.pl .seekpreview{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:none;align-items:center;',
     'gap:10px;background:rgba(0,0,0,.62);color:#fff;padding:10px 16px;border-radius:12px;z-index:5;pointer-events:none}',
     '.pl .seekpreview b{font-size:17px;font-weight:600;font-variant-numeric:tabular-nums}',
@@ -837,6 +846,7 @@
     playerEl.innerHTML =
       '<div class="stage">' +
       '<video playsinline webkit-playsinline preload="auto"></video>' +
+      '<canvas class="freeze"></canvas>' +
       '<div class="dim"></div>' +
       '<div class="spin"></div>' +
       '<div class="bigplay">' + ICON.bigplay + '</div>' +
@@ -928,6 +938,29 @@
     if (!d || !isFinite(d) || d <= 0) return 0;
     return Math.max(0, d - playerOff());
   }
+  var freezeOn = false;
+  function showFreeze() {
+    var v = videoEl;
+    if (!v || !v.videoWidth || !v.videoHeight || !playerEl) return;
+    var c = playerEl.querySelector('.freeze');
+    if (!c) return;
+    try {
+      if (c.width !== v.videoWidth) c.width = v.videoWidth;
+      if (c.height !== v.videoHeight) c.height = v.videoHeight;
+      var ctx = c.getContext('2d');
+      if (!ctx) return;
+      ctx.drawImage(v, 0, 0, c.width, c.height);
+      c.style.display = 'block';
+      freezeOn = true;
+    } catch (e) {}
+  }
+  function hideFreeze() {
+    if (!freezeOn) return;
+    freezeOn = false;
+    if (!playerEl) return;
+    var c = playerEl.querySelector('.freeze');
+    if (c) c.style.display = 'none';
+  }
   function syncProgress() {
     if (!playerOpen || !playerEl || !videoEl) return;
     if (seekBusy()) return;      // 手指按在进度条上时，播放事件不许改滑块
@@ -975,6 +1008,9 @@
     var tb = playerEl.querySelector('.ctlrow [data-a="toggle"]');
     if (tb) tb.innerHTML = videoEl.paused ? ICON.play : ICON.pause;
     playerEl.classList.toggle('paused', !!videoEl.paused);
+    if (!seekUI.pending) { seekUI.hard = false; }
+    playerEl.classList.toggle('seeking', !!seekUI.pending && (seekUI.hard || !!(hls && (hls.softSeek || hls.restarting))));
+    if (!seekUI.pending) hideFreeze();
   }
   function togglePlay() {
     if (!videoEl) return;
@@ -1002,7 +1038,8 @@
     dragging: false, gesture: false,
     ratio: 0, target: 0,
     pending: false, pendingAt: 0,
-    lastDur: 0, touchId: null, lastTouchAt: 0
+    lastDur: 0, touchId: null, lastTouchAt: 0,
+    hard: false
   };
   function seekBusy() { return seekUI.dragging || seekUI.gesture; }
   function resetSeekUI() {
@@ -1014,6 +1051,9 @@
     seekUI.target = 0;
     seekUI.lastDur = 0;
     seekUI.touchId = null;
+    seekUI.hard = false;
+    if (playerEl) playerEl.classList.remove('seeking');
+    hideFreeze();
   }
   function showUI() {
     if (!playerEl) return;
@@ -1321,7 +1361,7 @@
     var stage = playerEl.querySelector('.stage');
     var stX = 0, stY = 0, stT = 0, stDrag = false, stTarget = 0, stW = 1, lastTouchAt = 0;
     var tapTimer = 0, lastTapAt = 0, lastTapX = 0, pressTimer = 0, longPress = false;
-    var stMode = '', stVol = 1, stBri = 1, stH = 1;
+    var stMode = '', stVol = 1, stBri = 1, stH = 1, stWoke = false;
 
     function previewAt(target) {
       var el = playerEl.querySelector('.seekpreview');
@@ -1362,6 +1402,9 @@
         if (Date.now() < uiGuardUntil) return;
         var t0 = e.touches[0];
         if (!t0) return;
+        // 控件藏起来时，手指一碰就立刻唤醒（不等双击判定），否则马上拖动会落到画面手势上
+        stWoke = playerEl.classList.contains('hideui');
+        if (stWoke) showUI();
         stX = t0.clientX; stY = t0.clientY; stT = curPos(); stDrag = false; stTarget = stT;
         stW = stage.getBoundingClientRect().width || 1;
         stH = stage.getBoundingClientRect().height || 1;
@@ -1471,6 +1514,8 @@
         }
         lastTapAt = now; lastTapX = x;
         clearTimeout(tapTimer);
+        // 这一下只是把控件唤醒，不再触发暂停/播放
+        if (stWoke) { stWoke = false; return; }
         tapTimer = setTimeout(function () { stageTap(); }, 260);   // 等一下看是不是双击
       });
 
@@ -1482,6 +1527,7 @@
         }
         stDrag = false;
         stMode = '';
+        stWoke = false;
         hidePreview();
         if (seekUI.gesture) { seekUI.gesture = false; syncProgress(); showUI(); }
       });
@@ -1533,6 +1579,12 @@
       seekUI.pending = true;
       seekUI.pendingAt = Date.now();
       seekUI.lastDur = dur;
+      // 目标不在现有缓冲里：先把当前画面冻住，重建/补数据期间不黑屏
+      seekUI.hard = !isBuffered(videoEl, t + playerOff());
+      if (seekUI.hard) {
+        if (playerEl) playerEl.classList.add('seeking');
+        showFreeze();
+      } else if (playerEl) playerEl.classList.remove('seeking');
       paintSeek(seekUI.ratio);
       var cur = Math.max(0, (videoEl.currentTime || 0) - playerOff());
       if (Math.abs(cur - t) < 0.2 && !videoEl.seeking) {
@@ -1550,7 +1602,10 @@
       if (!playerDur() && !seekUI.lastDur) return false;
       seekUI.dragging = true;
       seekUI.pending = false;
+      seekUI.hard = false;
       seekUI.ratio = seekRatioAt(x);
+      if (playerEl) playerEl.classList.remove('seeking');
+      hideFreeze();
       showUI();
       paintSeek(seekUI.ratio);
       return true;
@@ -1658,6 +1713,7 @@
     // 记住看到哪了：暂停时、以及播放中每 6 秒存一次
     videoEl.addEventListener('pause', function () {
       if (current) savePlayPos(current, curPos());
+      if (playerEl && !(hls && hls.restarting) && !seekUI.pending) playerEl.classList.remove('buffering');
     });
     videoEl.addEventListener('timeupdate', function () {
       if (!current) return;
@@ -1691,16 +1747,35 @@
 
     // 内置播放器真的出画了，才把网页原来的播放器藏起来（没出画就不动它）
     videoEl.addEventListener('playing', function () {
-      if (playerEl) playerEl.classList.remove('loading');
+      if (playerEl) {
+        playerEl.classList.remove('loading');
+        playerEl.classList.remove('buffering');
+      }
+      hideFreeze();
       clearTimeout(loadTimer);
       var st0 = playerEl && playerEl.querySelector('.stat');
       if (st0 && st0.textContent === '缓冲中…') st0.textContent = '';
-      if (hls) { hls.retried = false; hls.everPlayed = true; hls.recover = 0; }
+      if (hls) { hls.retried = false; hls.everPlayed = true; hls.recover = 0; hls.hardRetried = false; }
       if (!playerOpen || !siteVideo) return;
       try {
         siteVideo.pause();
         siteVideo.style.visibility = 'hidden';
       } catch (e) {}
+    });
+
+    // 缓冲/跳转中的视觉状态：转圈 + 冻住最后一帧，别让用户以为暂停了
+    videoEl.addEventListener('waiting', function () {
+      if (playerOpen && !videoEl.paused && playerEl) playerEl.classList.add('buffering');
+    });
+    videoEl.addEventListener('canplay', function () {
+      if (playerEl && videoEl.readyState >= 3) playerEl.classList.remove('buffering');
+      if (!seekUI.pending) hideFreeze();
+    });
+    videoEl.addEventListener('loadeddata', function () {
+      if (!seekUI.pending) hideFreeze();
+    });
+    videoEl.addEventListener('seeked', function () {
+      if (!seekUI.pending) hideFreeze();
     });
 
     // 地址失效 / 编码不支持：先尝试自己修一次，修不好再退回网页播放
@@ -1709,13 +1784,18 @@
       var e = videoEl.error;
       if (!e) return;
 
+      // 跳转/重建过程中的瞬时报错交给 seek 流程处理（它会重试或回退重建），
+      // 否则会被误判成"编码不支持"把播放器关掉
+      if (hls && (hls.softSeek || hls.restarting || (seekUI.pending && Date.now() - seekUI.pendingAt < 5000))) return;
+
       // 解码类错误（3/4）多半是跳转后时间轴错乱，先自己修，别急着销毁播放器
       if ((e.code === 3 || e.code === 4) && hls) {
+        var at = hls.pendingSeek != null ? hls.pendingSeek : Math.max(0, curPos());
         // 第一步：如果现在是"直接吃 mp2t"，换成自己转封装
         if (!hls.transmux && !hls.triedTransmux) {
           hls.triedTransmux = true;
           toast('换个解码方式…');
-          hls.forceTransmux(Math.max(0, curPos())).catch(function () {});
+          hls.forceTransmux(at).catch(function () {});
           return;
         }
         // 第二步：已经正常播过的，只在原地重建，绝不关掉播放器
@@ -1723,7 +1803,7 @@
           if ((hls.recover || 0) < 3) {
             hls.recover = (hls.recover || 0) + 1;
             toast('画面出错，正在恢复…');
-            hls.reloadAt(Math.max(0, curPos())).catch(function () {});
+            hls.reloadAt(at).catch(function () {});
             return;
           }
           toast('播放出错，拖一下进度条可以重试');
@@ -1732,13 +1812,13 @@
         // 第三步：刚打开就失败，再重建一次
         if (!hls.retried) {
           hls.retried = true;
-          hls.reloadAt(Math.max(0, curPos())).catch(function () {});
+          hls.reloadAt(at).catch(function () {});
           return;
         }
       }
 
       var why = e.code === 4 ? '地址不可用或格式不支持'
-        : e.code === 3 ? '解码失败（编码不支持）'
+        : e.code === 3 ? '解码失败'
         : e.code === 2 ? '网络错误'
         : '播放出错 ' + e.code;
       if (playerEl) playerEl.classList.remove('loading');
@@ -2079,7 +2159,11 @@
     playerEl.classList.add('loading');
     clearTimeout(loadTimer);
     loadTimer = setTimeout(function () {
-      if (playerEl) playerEl.classList.remove('loading');
+      // 12 秒还没出画：恢复控件让人能关闭/重试，但继续转圈并藏住大播放键
+      if (playerEl && playerEl.classList.contains('loading')) {
+        playerEl.classList.remove('loading');
+        playerEl.classList.add('buffering');
+      }
     }, 12000);
     uiGuardUntil = Date.now() + 450;
     playerEl.classList.add('open');
@@ -2140,6 +2224,9 @@
     playerEl.classList.remove('hideui');
     playerEl.classList.remove('paused');
     playerEl.classList.remove('loading');
+    playerEl.classList.remove('seeking');
+    playerEl.classList.remove('buffering');
+    hideFreeze();
     playerEl.classList.remove('open');
     playerEl.classList.remove('embed');
     playerEl.style.cssText = '';
@@ -2743,6 +2830,10 @@
     this.txInit = null;
     this.txOut = [];
     this.ptsOffset = null;   // 流的 PTS 起点偏移，seek 时要用
+    this.softSeek = false;   // 正在往现有 MSE 里补跳转数据
+    this.softSeekT = 0;
+    this.softFailed = false;
+    this.hardRetried = false;
   }
 
   HlsPlayer.prototype.start = function () {
@@ -2828,6 +2919,52 @@
     } catch (e) {}
   };
 
+  // 转封装流的跳转：不重建 MSE，换一个新的 Transmuxer 接着往原 SourceBuffer 里补。
+  // 旧画面会一直留着，直到新分片解码出来（hls.js 处理 TS 跳转也是这个思路）。
+  HlsPlayer.prototype.seekTransmux = function (t) {
+    if (this.dead || !this.txmux || !this.sb || !this.ms) return false;
+    if (this.ms.readyState !== 'open') return false;
+    if (this.ptsOffset == null) return false;   // 起播还没对齐时间轴，先整体重建更稳
+    var i = findSegIndex(this.segs, t);
+    if (i < 0) return false;
+    var muxjs = window.muxjs;
+    if (!muxjs) return false;
+
+    var wasPlaying = false;
+    try { wasPlaying = !this.video.paused; } catch (e) {}
+    if (this.ctrl) { try { this.ctrl.abort(); } catch (e) {} }
+    var gen = ++this.gen;
+    this.ctrl = new AbortController();
+    this.pendingSeek = t;
+    this.aligned = false;
+    this.softSeek = true;
+    this.softSeekT = t;
+    this.softFailed = false;
+    this.autoPlay = wasPlaying;
+
+    try {
+      this.txOut.length = 0;
+      this.txInit = null;
+      this.txmux = new muxjs.mp4.Transmuxer();
+      // 时间轴接在已有缓冲后面（转封装输出从 0 起算，这里对齐到该分片的逻辑时间）
+      if (i > 0 && typeof this.txmux.setBaseMediaDecodeTime === 'function') {
+        this.txmux.setBaseMediaDecodeTime(Math.round(this.segs[i].start * 90000));
+      }
+      var self = this;
+      this.txmux.on('data', function (seg) {
+        if (!self.txInit && seg.initSegment && seg.initSegment.byteLength) self.txInit = seg.initSegment;
+        if (seg.data && seg.data.byteLength) self.txOut.push(seg.data);
+      });
+    } catch (e) {
+      this.softSeek = false;
+      return false;
+    }
+
+    showFreeze();
+    this.pump(i, gen, this.sb, null);
+    return true;
+  };
+
   HlsPlayer.prototype.seekTo = function (t) {
     if (this.dead) return;
     var off = this.ptsOffset || 0;
@@ -2842,10 +2979,19 @@
     var i = findSegIndex(this.segs, t);
     if (i < 0) return;
 
-    // TS 流要转封装，转封装器是"顺序"处理的：往回跳/跨段跳会把时间轴搞乱，
-    // 解码器直接报"解码失败"。这类流老老实实重建（fMP4 才走快速续补）。
-    if (!this.sb || !this.ms || this.ms.readyState !== 'open' || this.transmux) {
-      this.load(i, t).catch(function () {});
+    // TS 流要转封装，转封装器是"顺序"处理的：换一个新的 Transmuxer 接着写原 SourceBuffer，
+    // 这样不会把旧画面清掉；实在接不上（MSE 已结束/异常）才整体重建。
+    if (this.transmux) {
+      if (!this.seekTransmux(t)) {
+        var self0 = this;
+        this.load(i, t).catch(function () { self0.onState({ msg: '跳转失败，请重试' }); });
+      }
+      return;
+    }
+
+    if (!this.sb || !this.ms || this.ms.readyState !== 'open' || this.ptsOffset == null) {
+      var self1 = this;
+      this.load(i, t).catch(function () { self1.onState({ msg: '跳转失败，请重试' }); });
       return;
     }
 
@@ -2854,6 +3000,9 @@
     this.ctrl = new AbortController();
     this.pendingSeek = t;
     this.failStreak = 0;
+    this.softSeek = true;
+    this.softSeekT = t;
+    this.softFailed = false;
     // 先把播放头挪过去：不然数据没到时旧画面还会继续往下播一小段
     try {
       this.video.currentTime = target;
@@ -2917,9 +3066,12 @@
     this.ctrl = ctrl;
 
     this.restarting = true;
+    // 切清晰度/错误恢复时的重建也按"缓冲中"处理：不弹大播放键，控件仍可点
+    if (playerEl && !playerEl.classList.contains('loading')) playerEl.classList.add('buffering');
     this.pendingSeek = seekTime;
     this.aligned = false;
     this.ptsOffset = null;
+    this.softSeek = false;
 
     // 起播加速：init 段和首个分片同时发出去，不等 MediaSource 打开
     var mapP = this.map ? getBufCached(this.map.uri, this.map.range) : null;
@@ -2933,6 +3085,8 @@
     try { this.video.pause(); } catch (e) {}
     if (this.objUrl) { try { URL.revokeObjectURL(this.objUrl); } catch (e) {} this.objUrl = null; }
     if (this.ms) { try { this.ms.endOfStream(); } catch (e) {} }
+    // 换源前把最后一帧冻在画面上，重建 MSE 期间不黑屏
+    showFreeze();
 
     var ms;
     try { ms = new MediaSource(); } catch (e) { return Promise.reject(e); }
@@ -2981,7 +3135,10 @@
         });
       });
     }).catch(function (e) {
-      if (gen === self.gen) self.restarting = false;
+      if (gen === self.gen) {
+        self.restarting = false;
+        if (playerEl) playerEl.classList.remove('buffering');
+      }
       throw e;
     });
   };
@@ -3007,6 +3164,7 @@
 
   HlsPlayer.prototype.fetchSeg = function (seg, i, signal) {
     var self = this;
+    var myGen = this.gen;
     var key = cacheKey(seg.url, seg.range);
     var hit = segCache.get(key);
     var p = hit
@@ -3020,6 +3178,12 @@
         ? decryptAes(buf, seg.key, self.mediaSeq + i)
         : Promise.resolve(buf);
       return kp.then(function (data) {
+        // 期间已经发起了新的 seek/load：旧数据不能再喂给新的转封装器
+        if (self.gen !== myGen) {
+          var st = new Error('stale segment');
+          st.name = 'AbortError';
+          throw st;
+        }
         return self.transmux ? self.txSegment(data) : data;
       });
     });
@@ -3074,6 +3238,8 @@
         if (this.pendingSeek != null) {
           var t = this.pendingSeek;
           this.pendingSeek = null;
+          this.softSeek = false;
+          this.softSeekT = 0;
           this.lastSetTime = Date.now();
           var target = t + (this.ptsOffset || 0);
           this.video.currentTime = target;
@@ -3112,7 +3278,10 @@
     function step() {
       if (self.dead || gen !== self.gen) return;
       if (i >= self.segs.length) {
-        try { if (self.ms && self.ms.readyState === 'open') self.ms.endOfStream(); } catch (e) {}
+        // 点播已经用 duration 标了终点：保持 open，之后往回/往前跳还能继续 append
+        if (!(self.endlist && self.total > 0)) {
+          try { if (self.ms && self.ms.readyState === 'open') self.ms.endOfStream(); } catch (e) {}
+        }
         return;
       }
       // 缓冲够了就等一等，别把整部片子一口气拉下来（正在跳转时不拦）
@@ -3139,13 +3308,41 @@
         });
       }).catch(function (e) {
         if (e && e.name === 'AbortError') return;   // 主动取消，不算失败
+        // 往现有 MSE 补数据失败（多为时间轴/解码器不认）：退回整体重建一次
+        if (self.softSeek && !self.softFailed) {
+          self.softFailed = true;
+          var softT = self.softSeekT;
+          self.softSeek = false;
+          self.onState({ msg: '正在恢复…' });
+          var retryP;
+          if (!self.transmux && /^video\/mp2t/i.test(self.mime || '')) {
+            retryP = self.forceTransmux(softT);   // 内核自称支持 mp2t 但补数据失败：改用转封装
+          } else {
+            retryP = self.load(findSegIndex(self.segs, softT), softT);
+          }
+          retryP.catch(function () {
+            self.onState({ msg: '跳转失败，请重试' });
+          });
+          return;
+        }
         var n = (self.fails.get(i) || 0) + 1;
         self.fails.set(i, n);
         if (n >= 3) {
           self.failStreak = (self.failStreak || 0) + 1;
           if (self.failStreak > 6) {
+            if (!self.hardRetried) {
+              self.hardRetried = true;
+              self.failStreak = 0;
+              var rt = self.pendingSeek != null ? self.pendingSeek
+                : Math.max(0, (self.video.currentTime || 0) - (self.ptsOffset || 0));
+              self.onState({ msg: '正在恢复…' });
+              self.load(findSegIndex(self.segs, rt), rt).catch(function () {
+                self.onState({ msg: '跳转失败，请重试' });
+              });
+              return;
+            }
             self.dead = true;
-            self.onState({ msg: '解码失败，可能是不支持的编码' });
+            self.onState({ msg: '解码失败，请重试或下载' });
             return;
           }
           i++;
