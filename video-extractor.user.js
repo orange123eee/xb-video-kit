@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频提取器 · 万能播放/下载
 // @namespace    local.xbrowser.videokit
-// @version      2.9.1
+// @version      2.9.2
 // @description  自动嗅探网页视频（直链 / m3u8 / MSE 流），自带播放器（倍速、清晰度切换、全片拖动），多线程下载并合并为 mp4。
 // @author       me
 // @match        *://*/*
@@ -31,7 +31,7 @@
   try { IS_TOP = (window.top === window.self); } catch (e) { IS_TOP = false; }
 
   var MAX_ITEMS = 40;
-  var VERSION = '2.9.1';
+  var VERSION = '2.9.2';
 
   // ---- 设置 ----
   var CFG_KEY = 'xbvk.cfg';
@@ -1666,7 +1666,7 @@
       }
     });
 
-    // ---- 画面手势：左右拖动快进/快退、双击 ±10s、长按 2 倍速、轻点暂停 ----
+    // ---- 画面手势：左右拖动快进/快退、双击播放/暂停、长按 2 倍速、轻点唤出/收起控件 ----
     var stage = playerEl.querySelector('.stage');
     var stX = 0, stY = 0, stT = 0, stDrag = false, stTarget = 0, stW = 1, lastTouchAt = 0;
     var tapTimer = 0, lastTapAt = 0, lastTapX = 0, pressTimer = 0, longPress = false;
@@ -1703,17 +1703,15 @@
       if (el) el.style.display = 'none';
     }
     function stageTap() {
+      // 单击只负责控件显隐（B 站式）：藏着就唤出；亮着就收起（嵌在网页里的常驻控件除外）。
+      // 绝不在单击里暂停——横屏全屏时"点哪都暂停+弹大播放键"就是这么来的
       if (playerEl.classList.contains('hideui')) { showUI(); return; }
-      togglePlay();
-      showUI();
-    }
-    function jumpBy(sec) {
-      var dur = playerDur();
-      if (!dur) return;
-      var t = Math.max(0, Math.min(dur, curPos() + sec));
-      commitSeek(dur ? t / dur : 0);
-      badge((sec > 0 ? '+' : '') + sec + 's', '');
-      setTimeout(hidePreview, 550);
+      if (playerEl.classList.contains('mini') || !playerEl.classList.contains('embed')) {
+        clearTimeout(uiHideTimer);
+        playerEl.classList.add('hideui');
+      } else {
+        showUI();
+      }
     }
 
     if (stage) {
@@ -1820,15 +1818,12 @@
         var x = t0 ? t0.clientX : stX;
         var now = Date.now();
 
-        // 双击左右两侧快退/快进 10 秒
-        if (cfg.gestures && now - lastTapAt < 300 && Math.abs(x - lastTapX) < 70) {
+        // 双击：播放/暂停（不分区域，快进退走拖动手势或进度条）
+        if (now - lastTapAt < 300 && Math.abs(x - lastTapX) < 70) {
           clearTimeout(tapTimer);
           lastTapAt = 0;
-          var r = stage.getBoundingClientRect();
-          var rel = (x - r.left) / (r.width || 1);
-          if (rel < 0.35) jumpBy(-10);
-          else if (rel > 0.65) jumpBy(10);
-          else { togglePlay(); showUI(); }
+          togglePlay();
+          showUI();
           return;
         }
         lastTapAt = now; lastTapX = x;
@@ -1856,6 +1851,13 @@
         if (Date.now() < uiGuardUntil) return;
         if (Date.now() - lastTouchAt < 600) return;
         stageTap();
+      });
+      // 桌面双击同样走播放/暂停
+      stage.addEventListener('dblclick', function () {
+        if (Date.now() < uiGuardUntil) return;
+        if (Date.now() - lastTouchAt < 600) return;
+        togglePlay();
+        showUI();
       });
     }
 
@@ -2016,6 +2018,12 @@
     }
 
     // 锁屏 / 通知栏 / 耳机按键
+    function jumpBy(sec) {
+      var dur = playerDur();
+      if (!dur) return;
+      var t = Math.max(0, Math.min(dur, curPos() + sec));
+      commitSeek(dur ? t / dur : 0);
+    }
     if (navigator.mediaSession) {
       try {
         var ms = navigator.mediaSession;
