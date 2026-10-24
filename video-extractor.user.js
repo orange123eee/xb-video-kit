@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频提取器 · 万能播放/下载
 // @namespace    local.xbrowser.videokit
-// @version      2.6.9
+// @version      2.7.0
 // @description  自动嗅探网页视频（直链 / m3u8 / MSE 流），自带播放器（倍速、清晰度切换、全片拖动），多线程下载并合并为 mp4。
 // @author       me
 // @match        *://*/*
@@ -18,6 +18,7 @@
 //   - video-dev/hls.js：点播显式设置 MediaSource.duration 以扩展 seekable、按播放位置切换码率、
 //     跳转时复用同一个 MSE（换 Transmuxer 续写，不清空已缓冲画面）
 //   - Plyr / Video.js / DPlayer / xgplayer：拖动时冻结进度更新、记录 pendingSeekTime、touchcancel 还原
+// UI 方向参考 B 站移动端播放器：粉色主色、底部细进度条、倍速/清晰度弹层、居中重播键。
 // 唯一的外部资源：转封装时按需加载 mux.js（CDN，失败自动回退存 .ts）。
 
 (function () {
@@ -30,7 +31,7 @@
   try { IS_TOP = (window.top === window.self); } catch (e) { IS_TOP = false; }
 
   var MAX_ITEMS = 40;
-  var VERSION = '2.6.7';
+  var VERSION = '2.7.0';
 
   // ---- 设置 ----
   var CFG_KEY = 'xbvk.cfg';
@@ -60,6 +61,8 @@
     vol: '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5h3.4L12 5.6v12.8L7.4 14.5H4z"/><path d="M15.6 9.2a4 4 0 010 5.6"/></svg>',
     mute: '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5h3.4L12 5.6v12.8L7.4 14.5H4z"/><path d="M16 9.6l4.6 4.8M20.6 9.6L16 14.4"/></svg>',
     full: '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4H4v5M15 4h5v5M15 20h5v-5M9 20H4v-5"/></svg>',
+    back: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5L8 12l6.5 6.5"/></svg>',
+    replay: '<svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 10-2.4 5.7"/><path d="M20 4.8V11h-6.2"/></svg>',
     dl: '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v9.6M8 10.2l4 4 4-4M5 19.4h14"/></svg>',
     list: '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
     pip: '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2.4"/><rect x="12" y="12" width="6.4" height="4.8" rx="1.2" fill="currentColor" stroke="none"/></svg>'
@@ -105,10 +108,13 @@
   var videoEl = null;
   var toastEl = null;
   var progressEl = null;
+  var menuOpen = false;
   var hls = null;
   var current = null;
   var playerOpen = false;
   var sheetOpen = false;
+  var userPaused = false;      // 用户主动暂停过：之后的重建/补数据不许自动续播
+  var forcedEnded = false;     // 片源最后没有完整帧、播放器停在终点前：按播完处理
   // 打开面板/播放器后的 450ms 内忽略点击：移动端 touchend 之后浏览器会补发一次 click，
   // 此时球已隐藏，click 会落到刚出现的遮罩上，把面板瞬间关掉（表现为"点一下闪一下"）
   var uiGuardUntil = 0;
@@ -653,11 +659,12 @@
     '.pl{position:fixed;inset:0;background:#000;display:none;flex-direction:column;pointer-events:auto;z-index:3;overscroll-behavior:contain}',
     '.pl.open{display:flex}',
     '.pl.embed{border-radius:10px;overflow:hidden;box-shadow:0 10px 34px rgba(0,0,0,.55)}',
-    '.pl .top{display:flex;align-items:center;gap:8px;padding:calc(8px + env(safe-area-inset-top)) 12px 8px;',
-    'background:linear-gradient(rgba(0,0,0,.8),rgba(0,0,0,0));position:absolute;left:0;right:0;top:0;z-index:4;transition:opacity .25s}',
-    '.pl .top button{height:32px;min-width:32px;padding:0 10px;border-radius:16px;border:0;background:rgba(255,255,255,.16);',
-    'color:#fff;font-size:12.5px}',
-    '.pl .t{flex:1;color:#fff;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.92}',
+    '.pl .top{display:flex;align-items:center;gap:10px;padding:calc(8px + env(safe-area-inset-top)) 12px 10px;',
+    'background:linear-gradient(rgba(0,0,0,.74),rgba(0,0,0,0));position:absolute;left:0;right:0;top:0;z-index:4;transition:opacity .25s}',
+    '.pl .top button{height:34px;min-width:34px;width:34px;padding:0;border-radius:50%;border:0;background:rgba(0,0,0,.3);',
+    'color:#fff;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px)}',
+    '.pl .top button:active{background:rgba(255,255,255,.2)}',
+    '.pl .t{flex:1;color:#fff;font-size:13.5px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.95;letter-spacing:.1px}',
     '.pl .stage{position:absolute;inset:0;display:flex;background:#000}',
     '.pl .dim{position:absolute;inset:0;background:#000;opacity:0;pointer-events:none;z-index:2}',
     // 加载中：画面先透出网页原来的样子（海报/首帧），别一上来就是黑屏
@@ -671,10 +678,18 @@
     '.pl.loading .spin{display:block}',
     '@keyframes xbspin{to{transform:rotate(360deg)}}',
     '.pl video{flex:1;width:100%;height:100%;object-fit:contain;background:#000;display:block}',
-    '.pl .bigplay{position:absolute;left:50%;top:50%;width:66px;height:66px;margin:-33px 0 0 -33px;border-radius:50%;',
-    'background:rgba(0,0,0,.42);border:1px solid rgba(255,255,255,.35);color:#fff;display:none;align-items:center;',
-    'justify-content:center;font-size:24px;z-index:3}',
-    '.pl.paused .bigplay{display:flex}',
+    '.pl .bigplay{position:absolute;left:50%;top:50%;width:72px;height:72px;margin:-36px 0 0 -36px;border-radius:50%;',
+    'background:rgba(251,114,153,.94);border:0;color:#fff;display:none;align-items:center;',
+    'justify-content:center;z-index:3;box-shadow:0 8px 30px rgba(251,114,153,.34),0 4px 16px rgba(0,0,0,.42);',
+    'transition:transform .16s,background .16s}',
+    '.pl .bigplay svg{width:34px;height:34px;margin-left:3px}',
+    '.pl .bigplay .bp-play,.pl .bigplay .bp-replay{display:flex;align-items:center;justify-content:center}',
+    '.pl .bigplay .bp-replay{display:none}',
+    '.pl.ended .bigplay .bp-play{display:none}',
+    '.pl.ended .bigplay .bp-replay{display:flex}',
+    '.pl.paused .bigplay{display:flex;animation:xbpop .18s ease-out}',
+    '.pl.paused .bigplay:active{transform:scale(.92);background:rgba(251,114,153,1)}',
+    '@keyframes xbpop{from{transform:scale(.82);opacity:.5}to{transform:scale(1);opacity:1}}',
     // 加载中不显示大播放键（此时还没内容，显示它反而像卡住了）
     '.pl.loading .bigplay{display:none}',
     // 跳转/缓冲中：保留控件，只把大播放键换成转圈（否则会被误认为已暂停）
@@ -685,36 +700,79 @@
     // 重建 MSE 前把最后一帧留在画面上，加载期间不黑屏
     '.pl .freeze{position:absolute;left:0;top:0;width:100%;height:100%;object-fit:contain;display:none;z-index:1;pointer-events:none}',
     '.pl .seekpreview{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:none;align-items:center;',
-    'gap:10px;background:rgba(0,0,0,.62);color:#fff;padding:10px 16px;border-radius:12px;z-index:5;pointer-events:none}',
-    '.pl .seekpreview b{font-size:17px;font-weight:600;font-variant-numeric:tabular-nums}',
-    '.pl .seekpreview i{font-style:normal;font-size:12px;opacity:.82;font-variant-numeric:tabular-nums}',
-    '.pl .ctl{position:absolute;left:0;right:0;bottom:0;z-index:4;padding:30px 14px calc(10px + env(safe-area-inset-bottom));',
-    'background:linear-gradient(transparent,rgba(0,0,0,.9));transition:opacity .25s}',
+    'gap:10px;background:rgba(18,19,23,.84);color:#fff;padding:10px 15px;border-radius:12px;z-index:5;pointer-events:none;',
+    'border:1px solid rgba(255,255,255,.1);box-shadow:0 6px 22px rgba(0,0,0,.42);backdrop-filter:blur(10px)}',
+    '.pl .seekpreview b{font-size:18px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.1}',
+    '.pl .seekpreview i{font-style:normal;font-size:12px;opacity:.9;color:#ff9dbb;font-variant-numeric:tabular-nums}',
+    '.pl .seekpreview.hud{flex-direction:column;align-items:flex-start;gap:7px;min-width:94px;padding:10px 12px}',
+    '.pl .seekpreview.hud b{font-size:17px}',
+    '.pl .seekpreview.hud i{font-size:10.5px;color:rgba(255,255,255,.7);order:-1;letter-spacing:.5px}',
+    '.pl .seekpreview .bar{display:none;width:74px;height:3px;border-radius:2px;background:rgba(255,255,255,.22);overflow:hidden}',
+    '.pl .seekpreview .bar em{display:block;width:0;height:100%;border-radius:2px;background:#fb7299}',
+    '.pl .seekpreview.hud .bar{display:block}',
+    '.pl .seekpreview.left{left:17%}',
+    '.pl .seekpreview.right{left:83%}',
+    '.pl .ctl{position:absolute;left:0;right:0;bottom:0;z-index:4;padding:32px 14px calc(10px + env(safe-area-inset-bottom));',
+    'background:linear-gradient(transparent,rgba(0,0,0,.78) 40%,rgba(0,0,0,.94));transition:opacity .25s}',
     '.pl.hideui .top,.pl.hideui .ctl{opacity:0;pointer-events:none}',
-    '.pl .seek{position:relative;height:32px;display:flex;align-items:center;touch-action:none;cursor:pointer;margin-bottom:2px}',
-    '.pl .seek .track{position:absolute;left:0;right:0;height:4px;border-radius:2px;background:rgba(255,255,255,.24)}',
-    '.pl .seek .buf{position:absolute;left:0;width:0;height:4px;border-radius:2px;background:rgba(255,255,255,.34)}',
-    '.pl .seek .bar{position:absolute;left:0;width:0;height:4px;border-radius:2px;background:#3ea6ff}',
+    '.pl .seek{position:relative;height:34px;display:flex;align-items:center;touch-action:none;cursor:pointer;margin-bottom:0}',
+    '.pl .seek .track{position:absolute;left:0;right:0;height:3px;border-radius:2px;background:rgba(255,255,255,.18)}',
+    '.pl .seek .buf{position:absolute;left:0;width:0;height:3px;border-radius:2px;background:rgba(255,255,255,.3)}',
+    '.pl .seek .bar{position:absolute;left:0;width:0;height:3px;border-radius:2px;background:#fb7299;box-shadow:0 0 7px rgba(251,114,153,.42)}',
     '.pl .seek .knob{position:absolute;left:0;width:12px;height:12px;border-radius:50%;background:#fff;',
-    'margin-left:-6px;box-shadow:0 1px 5px rgba(0,0,0,.6)}',
-    '.pl .ctlrow{display:flex;align-items:center;gap:7px}',
-    '.pl .ctlrow button{height:32px;padding:0 10px;border-radius:9px;border:0;background:rgba(255,255,255,.12);',
-    'color:#e9ebef;font-size:12.5px;flex:none}',
+    'margin-left:-6px;border:2px solid #fb7299;box-shadow:0 2px 8px rgba(0,0,0,.45);transition:transform .12s}',
+    '.pl .seek.on .knob{transform:scale(1.28)}',
+    '.pl .seek .tip{position:absolute;bottom:30px;left:0;transform:translateX(-50%);background:rgba(20,21,25,.94);',
+    'color:#fff;font:600 11px/1 -apple-system,"PingFang SC",sans-serif;padding:6px 8px;border-radius:7px;',
+    'white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .12s;z-index:5;font-variant-numeric:tabular-nums;',
+    'border:1px solid rgba(255,255,255,.1)}',
+    '.pl .seek.on .tip{opacity:1}',
+    '.pl .ctlrow{display:flex;align-items:center;gap:6px;height:38px}',
+    '.pl .ctlrow button{height:30px;padding:0 9px;border-radius:8px;border:0;background:rgba(255,255,255,.09);',
+    'color:#f1f3f6;font-size:12px;font-weight:500;flex:none}',
+    '.pl .ctlrow button:active{background:rgba(255,255,255,.2)}',
     '.pl .ctlrow button.ico{width:34px;padding:0;background:transparent;display:flex;align-items:center;justify-content:center}',
-    '.pl .side{position:absolute;right:10px;bottom:calc(96px + env(safe-area-inset-bottom));z-index:4;display:flex;',
-    'flex-direction:column;gap:12px;transition:opacity .25s}',
-    '.pl .side button{width:46px;height:46px;border-radius:50%;border:0;background:rgba(0,0,0,.42);color:#fff;',
-    'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}',
-    '.pl .side button i{font-style:normal;font-size:9px;opacity:.9;line-height:1}',
-    '.pl.embed .side{bottom:calc(78px + env(safe-area-inset-bottom));gap:8px}',
-    '.pl.embed .side button{width:38px;height:38px}',
+    '.pl .ctlrow button.ico:active{background:rgba(255,255,255,.12)}',
+    '.pl .ctlrow button.on{background:rgba(251,114,153,.18);color:#ff9dbb}',
+    '.pl .ctlrow button[data-a="speed"]::after,.pl .ctlrow button[data-a="q"]::after{content:"";display:inline-block;',
+    'width:0;height:0;border-left:3px solid transparent;border-right:3px solid transparent;border-top:4px solid currentColor;',
+    'margin-left:5px;opacity:.65;vertical-align:middle}',
+    '.pl .side{position:absolute;right:10px;bottom:calc(100px + env(safe-area-inset-bottom));z-index:4;display:flex;',
+    'flex-direction:column;gap:10px;transition:opacity .25s}',
+    '.pl .side button{width:42px;height:42px;border-radius:50%;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.36);',
+    'color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;backdrop-filter:blur(6px)}',
+    '.pl .side button:active{transform:scale(.94);background:rgba(255,255,255,.18)}',
+    '.pl .side button i{font-style:normal;font-size:8.5px;color:rgba(255,255,255,.78);line-height:1}',
+    '.pl.embed .side{bottom:calc(92px + env(safe-area-inset-bottom));gap:8px}',
+    '.pl.embed .side button{width:36px;height:36px}',
     '.pl.embed .side button i{font-size:8px}',
     // 嵌入的小框放不下三个按钮，画中画留给全屏用
     '.pl.embed .side [data-a="pip"]{display:none}',
     '.pl.hideui .side{opacity:0;pointer-events:none}',
-    '.pl .ctlrow .tm{font-size:11px;color:#cdd3dc;font-variant-numeric:tabular-nums;flex:none}',
-    '.pl .ctlrow .stat{font-size:10px;color:rgba(255,255,255,.5);flex:none}',
+    '.pl .ctlrow .tm{font-size:11.5px;color:rgba(255,255,255,.78);font-variant-numeric:tabular-nums;flex:none;white-space:nowrap}',
+    '.pl .ctlrow .stat{font-size:10px;color:rgba(255,255,255,.42);flex:none;max-width:96px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    '.pl.embed .ctlrow .stat{display:none}',
     '.pl .ctlrow .sp{flex:1}',
+    // 倍速 / 清晰度弹层
+    '.pl .pmask{position:absolute;inset:0;z-index:7;display:none;background:rgba(0,0,0,.16)}',
+    '.pl .pmask.on{display:block}',
+    '.pl .pmenu{position:absolute;right:12px;bottom:calc(60px + env(safe-area-inset-bottom));z-index:8;display:none;',
+    'min-width:150px;max-width:calc(100% - 24px);max-height:52vh;overflow-y:auto;-webkit-overflow-scrolling:touch;',
+    'background:rgba(22,23,28,.97);border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:8px;',
+    'box-shadow:0 10px 30px rgba(0,0,0,.55);backdrop-filter:blur(14px);',
+    'font:12.5px/1.4 -apple-system,"PingFang SC","Noto Sans SC",sans-serif}',
+    '.pl .pmenu.on{display:block;animation:xbmenupop .16s ease-out}',
+    '@keyframes xbmenupop{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}',
+    '.pl .pmenu .pmt{font-size:10.5px;color:#8b93a1;padding:2px 6px 7px;letter-spacing:.3px}',
+    '.pl .pmenu button{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;height:32px;',
+    'padding:0 9px;border:0;border-radius:7px;background:transparent;color:#e9ebef;font-size:12.5px;text-align:left}',
+    '.pl .pmenu button:active{background:rgba(255,255,255,.1)}',
+    '.pl .pmenu button.on{color:#ff9dbb;background:rgba(251,114,153,.14);font-weight:600}',
+    '.pl .pmenu button.on::after{content:"✓";font-size:11px;color:#fb7299}',
+    '.pl .pmenu.grid{width:232px}',
+    '.pl .pmenu.grid .pmbody{display:grid;grid-template-columns:repeat(4,minmax(48px,1fr));gap:4px}',
+    '.pl .pmenu.grid button{justify-content:center;height:30px;padding:0 4px;font-size:12px}',
+    '.pl .pmenu.grid button.on::after{content:""}',
     '.toast{position:fixed;left:50%;bottom:130px;transform:translate(-50%,10px);background:rgba(24,26,31,.96);color:#e9ebef;',
     'padding:10px 14px;border-radius:10px;font:13px/1.4 -apple-system,sans-serif;max-width:80vw;text-align:center;',
     'opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:20;box-shadow:0 6px 24px rgba(0,0,0,.5)}',
@@ -753,13 +811,23 @@
     '.srow .csz{font-style:normal;color:#8b93a1;font-size:12px}',
     '.srow .mini{height:28px;padding:0 12px;border-radius:8px;border:1px solid rgba(255,255,255,.14);',
     'background:rgba(255,255,255,.07);color:#cfd5de;font-size:12px}',
+    // 窄屏：段数状态和间距让一让，别把控制栏挤爆
+    '@media (max-width:400px){',
+    '.pl .ctlrow{gap:5px}',
+    '.pl .ctlrow .stat{display:none}',
+    '.pl .ctlrow .tm{font-size:10.5px}',
+    '.pl .ctlrow button[data-a="q"]{padding:0 7px}',
+    '}',
     // 横屏：刘海在左右两侧，边距要按 safe-area 让开；控件也收紧一点
     '@media (orientation:landscape){',
     '.pl .top{padding:calc(6px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) 6px calc(16px + env(safe-area-inset-left))}',
     '.pl .ctl{padding:22px calc(18px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) calc(18px + env(safe-area-inset-left))}',
-    '.pl .side{right:calc(14px + env(safe-area-inset-right));bottom:calc(74px + env(safe-area-inset-bottom))}',
-    '.pl .seek{height:28px}',
-    '.pl .bigplay{width:58px;height:58px;margin:-29px 0 0 -29px}',
+    '.pl .side{right:calc(14px + env(safe-area-inset-right));bottom:calc(84px + env(safe-area-inset-bottom))}',
+    '.pl .seek{height:30px}',
+    '.pl .seek .tip{bottom:27px}',
+    '.pl .bigplay{width:64px;height:64px;margin:-32px 0 0 -32px}',
+    '.pl .bigplay svg{width:30px;height:30px}',
+    '.pl .pmenu{bottom:calc(56px + env(safe-area-inset-bottom))}',
     '}'
   ].join('');
 
@@ -849,17 +917,17 @@
       '<canvas class="freeze"></canvas>' +
       '<div class="dim"></div>' +
       '<div class="spin"></div>' +
-      '<div class="bigplay">' + ICON.bigplay + '</div>' +
-      '<div class="seekpreview"><b>0:00</b><i>+0:00</i></div>' +
+      '<div class="bigplay"><span class="bp-play">' + ICON.bigplay + '</span><span class="bp-replay">' + ICON.replay + '</span></div>' +
+      '<div class="seekpreview"><b>0:00</b><i>+0:00</i><span class="bar"><em></em></span></div>' +
       '</div>' +
-      '<div class="top"><button data-a="close">✕</button><div class="t"></div></div>' +
+      '<div class="top"><button data-a="close">' + ICON.back + '</button><div class="t"></div></div>' +
       '<div class="side">' +
       '<button data-a="dl">' + ICON.dl + '<i>下载</i></button>' +
       '<button data-a="pip">' + ICON.pip + '<i>画中画</i></button>' +
       '<button data-a="list">' + ICON.list + '<i>列表</i></button>' +
       '</div>' +
       '<div class="ctl">' +
-      '<div class="seek"><i class="track"></i><i class="buf"></i><i class="bar"></i><b class="knob"></b></div>' +
+      '<div class="seek"><i class="track"></i><i class="buf"></i><i class="bar"></i><b class="knob"></b><span class="tip">0:00</span></div>' +
       '<div class="ctlrow">' +
       '<button data-a="toggle" class="ico">' + ICON.play + '</button>' +
       '<span class="tm">0:00 / 0:00</span>' +
@@ -869,7 +937,9 @@
       '<button data-a="q" style="display:none">清晰度</button>' +
       '<button data-a="mute" class="ico">' + ICON.vol + '</button>' +
       '<button data-a="full" class="ico">' + ICON.full + '</button>' +
-      '</div></div>';
+      '</div></div>' +
+      '<div class="pmask"></div>' +
+      '<div class="pmenu"><div class="pmt"></div><div class="pmbody"></div></div>';
     root.appendChild(playerEl);
     videoEl = playerEl.querySelector('video');
 
@@ -984,6 +1054,14 @@
     }
     if (wasPending && !seekUI.pending) showUI();
 
+    // 片源最后没有完整帧：停在离终点很近的地方、分片又全部下完了，按播完处理
+    if (!forcedEnded && hls && hls.finished && !seekUI.pending && dur > 0 &&
+        !videoEl.paused && !videoEl.ended && videoEl.readyState < 3 && dur - pos < 0.7) {
+      forcedEnded = true;
+      try { videoEl.pause(); } catch (e) {}
+      showUI();
+    }
+
     var pct = dur ? Math.min(1, Math.max(0, pos / dur)) : 0;
 
     var bar = playerEl.querySelector('.seek .bar');
@@ -1008,17 +1086,24 @@
     var tb = playerEl.querySelector('.ctlrow [data-a="toggle"]');
     if (tb) tb.innerHTML = videoEl.paused ? ICON.play : ICON.pause;
     playerEl.classList.toggle('paused', !!videoEl.paused);
+    playerEl.classList.toggle('ended', !!videoEl.ended || forcedEnded);
     if (!seekUI.pending) { seekUI.hard = false; }
     playerEl.classList.toggle('seeking', !!seekUI.pending && (seekUI.hard || !!(hls && (hls.softSeek || hls.restarting))));
     if (!seekUI.pending) hideFreeze();
   }
   function togglePlay() {
     if (!videoEl) return;
+    if (forcedEnded) {
+      forcedEnded = false;
+      try { videoEl.currentTime = playerOff(); } catch (e) {}
+    }
     if (videoEl.paused) {
+      userPaused = false;
       // 已经播完再点播放，从头来
       if (videoEl.ended) { try { videoEl.currentTime = playerOff(); } catch (e) {} }
       safePlay(videoEl);
     } else {
+      userPaused = true;
       try { videoEl.pause(); } catch (e) {}
     }
     setTimeout(syncProgress, 40);
@@ -1060,12 +1145,71 @@
     playerEl.classList.remove('hideui');
     clearTimeout(uiHideTimer);
     uiHideTimer = setTimeout(function () {
-      if (seekBusy() || seekUI.pending) return;   // 拖动/跳转中不要藏控件
+      if (seekBusy() || seekUI.pending || menuOpen) return;   // 拖动/跳转/弹层打开时不要藏控件
       // 只有全屏时才自动隐藏控件；嵌在网页播放框里就常驻，否则用户不知道能点
       if (playerOpen && videoEl && !videoEl.paused && !playerEl.classList.contains('embed')) {
         playerEl.classList.add('hideui');
       }
     }, 3200);
+  }
+
+  function fmtSpeed(n) {
+    return Number(n).toFixed(2).replace(/0$/, '') + 'x';
+  }
+
+  function escHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;';
+    });
+  }
+
+  function closeMenus(quiet) {
+    menuOpen = false;
+    if (playerEl) {
+      var m = playerEl.querySelector('.pmenu');
+      var mk = playerEl.querySelector('.pmask');
+      if (m) m.classList.remove('on');
+      if (mk) mk.classList.remove('on');
+      var on = playerEl.querySelectorAll('.ctlrow button.on');
+      for (var i = 0; i < on.length; i++) on[i].classList.remove('on');
+    }
+    if (!quiet) showUI();
+  }
+
+  function openMenu(kind, anchor) {
+    if (!playerEl) return;
+    closeMenus(true);
+    var menu = playerEl.querySelector('.pmenu');
+    var mask = playerEl.querySelector('.pmask');
+    var title = playerEl.querySelector('.pmenu .pmt');
+    var body = playerEl.querySelector('.pmenu .pmbody');
+    if (!menu || !body || !title) return;
+
+    var html = '';
+    if (kind === 'speed') {
+      title.textContent = '播放速度';
+      menu.classList.add('grid');
+      for (var i = 0; i < SPEEDS.length; i++) {
+        html += '<button data-a="spd" data-v="' + SPEEDS[i] + '"' +
+          (i === speedIdx ? ' class="on"' : '') + '>' + fmtSpeed(SPEEDS[i]) + '</button>';
+      }
+    } else {
+      var vs = (hls && hls.variants) || [];
+      if (vs.length < 2) return;
+      title.textContent = '清晰度';
+      menu.classList.remove('grid');
+      for (var j = 0; j < vs.length; j++) {
+        var lab = (vs[j] && vs[j].label) || ('清晰度 ' + (j + 1));
+        html += '<button data-a="qsel" data-v="' + j + '" data-l="' + escHtml(lab) + '"' +
+          (j === (hls.variantIndex || 0) ? ' class="on"' : '') + '>' + escHtml(lab) + '</button>';
+      }
+    }
+    body.innerHTML = html;
+    menu.classList.add('on');
+    if (mask) mask.classList.add('on');
+    menuOpen = true;
+    if (anchor) anchor.classList.add('on');
+    showUI();
   }
   function exitFull() {
     try { if (window.screen && screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch (e) {}
@@ -1297,6 +1441,14 @@
       else if (act === 'copy') copyText(it.url);
     });
 
+    var pmaskEl = playerEl.querySelector('.pmask');
+    if (pmaskEl) {
+      pmaskEl.addEventListener('click', function (e) {
+        e.stopPropagation();
+        closeMenus();
+      });
+    }
+
     playerEl.addEventListener('click', function (e) {
       if (Date.now() < uiGuardUntil) return;
       var el = e.target;
@@ -1308,6 +1460,7 @@
       else if (a === 'list') {
         // 只把播放器藏起来，别销毁 —— 否则收起列表后播放器就没了，还得刷新
         playerHiddenForSheet = true;
+        closeMenus(true);
         exitFull();                 // 全屏下底部列表不好看，先退出来
         playerEl.classList.remove('open');
         // 播放器藏了就把网页原来的画面也藏起来，免得列表下面露出原播放器
@@ -1322,10 +1475,34 @@
         el.innerHTML = videoEl.muted ? ICON.mute : ICON.vol;
       }
       else if (a === 'speed') {
-        speedIdx = (speedIdx + 1) % SPEEDS.length;
-        videoEl.playbackRate = SPEEDS[speedIdx];
-        el.textContent = SPEEDS[speedIdx].toFixed(2).replace(/0$/, '') + 'x';
-        toast('倍速 ' + SPEEDS[speedIdx] + 'x');
+        openMenu('speed', el);
+      } else if (a === 'q') {
+        openMenu('quality', el);
+      } else if (a === 'spd') {
+        var sv = parseFloat(el.getAttribute('data-v'));
+        var si = SPEEDS.indexOf(sv);
+        if (si >= 0) {
+          speedIdx = si;
+          try { videoEl.playbackRate = SPEEDS[si]; } catch (e) {}
+          var spb = playerEl.querySelector('[data-a="speed"]');
+          if (spb) spb.textContent = fmtSpeed(SPEEDS[si]);
+          toast('倍速 ' + SPEEDS[si] + 'x');
+        }
+        closeMenus();
+      } else if (a === 'qsel') {
+        var qi = parseInt(el.getAttribute('data-v'), 10);
+        var qlab = el.getAttribute('data-l') || '';
+        closeMenus();
+        if (!hls || isNaN(qi) || qi === (hls.variantIndex || 0)) return;
+        var qb = playerEl.querySelector('[data-a="q"]');
+        if (qb) qb.textContent = qlab || '清晰度';
+        toast('切换到 ' + (qlab || '清晰度'));
+        hls.switchTo(qi).then(function () {
+          if (hls) updateQualityBtn(hls);
+        }, function () {
+          toast('切换失败');
+          if (hls) updateQualityBtn(hls);
+        });
       } else if (a === 'dl' && current) {
         // 用户可能在播放器里切过清晰度，下载要跟着当前选中的那一路走
         var dlTarget = current;
@@ -1339,16 +1516,6 @@
         downloadItem(dlTarget);
       }
       else if (a === 'copy' && current) copyText(current.url);
-      else if (a === 'q' && hls) {
-        var vs = hls.variants || [];
-        if (vs.length < 2) return;
-        var ni = ((hls.variantIndex || 0) + 1) % vs.length;
-        el.textContent = vs[ni].label;
-        toast('切换到 ' + vs[ni].label);
-        hls.switchTo(ni).then(function () {
-          if (hls) updateQualityBtn(hls);
-        }, function () { toast('切换失败'); });
-      }
     });
 
     progressEl.addEventListener('click', function (e) {
@@ -1366,17 +1533,27 @@
     function previewAt(target) {
       var el = playerEl.querySelector('.seekpreview');
       if (!el) return;
+      el.classList.remove('hud', 'left', 'right');
+      var em = el.querySelector('.bar em');
+      if (em) em.style.width = '0';
       stTarget = target;
       el.querySelector('b').textContent = fmtTime(target);
       var d = target - stT;
       el.querySelector('i').textContent = (d >= 0 ? '+' : '-') + fmtTime(Math.abs(d));
       el.style.display = 'flex';
     }
-    function badge(big, small) {
+    function badge(big, small, side, level) {
       var el = playerEl.querySelector('.seekpreview');
       if (!el) return;
+      el.classList.remove('hud', 'left', 'right');
+      if (side === 'left' || side === 'right') el.classList.add(side);
       el.querySelector('b').textContent = big;
       el.querySelector('i').textContent = small || '';
+      var em = el.querySelector('.bar em');
+      if (level != null) {
+        el.classList.add('hud');
+        if (em) em.style.width = (Math.max(0, Math.min(1, level)) * 100).toFixed(1) + '%';
+      } else if (em) em.style.width = '0';
       el.style.display = 'flex';
     }
     function hidePreview() {
@@ -1461,11 +1638,11 @@
         } else if (stMode === 'vol') {
           var v = Math.max(0, Math.min(1, stVol - dy / (stH * 0.7)));
           try { videoEl.volume = v; videoEl.muted = false; } catch (err) {}
-          badge('音量 ' + Math.round(v * 100) + '%', '');
+          badge(Math.round(v * 100) + '%', '音量', 'right', v);
         } else if (stMode === 'bri') {
           brightVal = Math.max(0, Math.min(1, stBri - dy / (stH * 0.7)));
           applyBright();
-          badge('亮度 ' + Math.round(brightVal * 100) + '%', '');
+          badge(Math.round(brightVal * 100) + '%', '亮度', 'left', brightVal);
         }
         e.preventDefault();
       }, { passive: false });
@@ -1557,6 +1734,12 @@
       var knob = playerEl.querySelector('.seek .knob');
       if (bar) bar.style.width = (ratio * 100).toFixed(2) + '%';
       if (knob) knob.style.left = (ratio * 100).toFixed(2) + '%';
+      if (seekBar) seekBar.classList.toggle('on', !!seekUI.dragging);
+      var tip = playerEl.querySelector('.seek .tip');
+      if (tip) {
+        tip.textContent = fmtTime(seekUI.target);
+        tip.style.left = (Math.max(0.06, Math.min(0.94, ratio)) * 100).toFixed(2) + '%';
+      }
       var tm = playerEl.querySelector('.tm');
       if (tm) tm.textContent = fmtTime(seekUI.target) + ' / ' + fmtTime(shownDur);
       // 拖动时预取目标分片，松手就能立刻出画
@@ -1570,7 +1753,11 @@
         syncProgress();
         return;
       }
+      forcedEnded = false;
+      if (playerEl) playerEl.classList.remove('ended');
       var t = Math.max(0, Math.min(dur, ratio * dur));
+      // 拖到最末尾时别往没有完整帧的尾部钻，留一点让它自然播完（直播不这样处理）
+      if ((!hls || hls.endlist) && dur > 1 && dur - t < 0.35) t = Math.max(0, dur - 0.35);
       seekUI.dragging = false;
       seekUI.gesture = false;
       seekUI.touchId = null;
@@ -1603,6 +1790,8 @@
       seekUI.dragging = true;
       seekUI.pending = false;
       seekUI.hard = false;
+      forcedEnded = false;
+      if (playerEl) playerEl.classList.remove('ended');
       seekUI.ratio = seekRatioAt(x);
       if (playerEl) playerEl.classList.remove('seeking');
       hideFreeze();
@@ -1615,6 +1804,7 @@
       if (x != null) paintSeek(seekRatioAt(x));
       seekUI.dragging = false;
       seekUI.touchId = null;
+      if (seekBar) seekBar.classList.remove('on');
       if (commit) commitSeek(seekUI.ratio);
       else { seekUI.pending = false; syncProgress(); showUI(); }
     }
@@ -1679,7 +1869,7 @@
       });
     }
 
-    var evs = ['timeupdate', 'progress', 'durationchange', 'play', 'pause', 'loadedmetadata', 'seeked'];
+    var evs = ['timeupdate', 'progress', 'durationchange', 'play', 'pause', 'loadedmetadata', 'seeked', 'waiting', 'stalled'];
     for (var ei = 0; ei < evs.length; ei++) {
       videoEl.addEventListener(evs[ei], function () { syncProgress(); });
     }
@@ -1688,8 +1878,8 @@
     if (navigator.mediaSession) {
       try {
         var ms = navigator.mediaSession;
-        ms.setActionHandler('play', function () { if (videoEl) safePlay(videoEl); });
-        ms.setActionHandler('pause', function () { try { videoEl.pause(); } catch (e) {} });
+        ms.setActionHandler('play', function () { userPaused = false; if (videoEl) safePlay(videoEl); });
+        ms.setActionHandler('pause', function () { userPaused = true; try { videoEl.pause(); } catch (e) {} });
         ms.setActionHandler('seekbackward', function () { jumpBy(-10); });
         ms.setActionHandler('seekforward', function () { jumpBy(10); });
         ms.setActionHandler('seekto', function (d) {
@@ -1714,6 +1904,8 @@
     videoEl.addEventListener('pause', function () {
       if (current) savePlayPos(current, curPos());
       if (playerEl && !(hls && hls.restarting) && !seekUI.pending) playerEl.classList.remove('buffering');
+      // 暂停/播完时把控件亮出来（B 站也是暂停即显示控制栏）
+      if (playerOpen) showUI();
     });
     videoEl.addEventListener('timeupdate', function () {
       if (!current) return;
@@ -1724,6 +1916,8 @@
 
     // 换源后倍速会被重置，播放时补回来
     videoEl.addEventListener('play', function () {
+      userPaused = false;
+      forcedEnded = false;
       try { videoEl.playbackRate = SPEEDS[speedIdx]; } catch (e) {}
     });
 
@@ -1946,6 +2140,8 @@
     if (playerOpen && videoEl && !videoEl.paused) {
       try { videoEl.playbackRate = SPEEDS[speedIdx]; } catch (e) {}
     }
+    var spb = playerEl && playerEl.querySelector('[data-a="speed"]');
+    if (spb) spb.textContent = fmtSpeed(SPEEDS[speedIdx]);
   }
 
   function openSettings() {
@@ -2154,6 +2350,12 @@
     buildUI();
     playerOpen = true;
     resetSeekUI();
+    closeMenus(true);
+    userPaused = false;
+    forcedEnded = false;
+    playerEl.classList.remove('ended');
+    var spb0 = playerEl.querySelector('[data-a="speed"]');
+    if (spb0) spb0.textContent = fmtSpeed(SPEEDS[speedIdx]);
     playerHiddenForSheet = false;
     // 加载中先透出网页原本的画面，别一上来就黑屏
     playerEl.classList.add('loading');
@@ -2211,6 +2413,9 @@
   function closePlayer() {
     if (current) savePlayPos(current, curPos());
     resetSeekUI();
+    closeMenus(true);
+    userPaused = false;
+    forcedEnded = false;
     if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
     try {
       videoEl.pause();
@@ -2223,6 +2428,7 @@
     clearTimeout(loadTimer);
     playerEl.classList.remove('hideui');
     playerEl.classList.remove('paused');
+    playerEl.classList.remove('ended');
     playerEl.classList.remove('loading');
     playerEl.classList.remove('seeking');
     playerEl.classList.remove('buffering');
@@ -2834,6 +3040,7 @@
     this.softSeekT = 0;
     this.softFailed = false;
     this.hardRetried = false;
+    this.finished = false;    // 点播分片已经全部处理完
   }
 
   HlsPlayer.prototype.start = function () {
@@ -2941,6 +3148,7 @@
     this.softSeekT = t;
     this.softFailed = false;
     this.autoPlay = wasPlaying;
+    this.finished = false;
 
     try {
       this.txOut.length = 0;
@@ -3003,6 +3211,7 @@
     this.softSeek = true;
     this.softSeekT = t;
     this.softFailed = false;
+    this.finished = false;
     // 先把播放头挪过去：不然数据没到时旧画面还会继续往下播一小段
     try {
       this.video.currentTime = target;
@@ -3072,6 +3281,7 @@
     this.aligned = false;
     this.ptsOffset = null;
     this.softSeek = false;
+    this.finished = false;
 
     // 起播加速：init 段和首个分片同时发出去，不等 MediaSource 打开
     var mapP = this.map ? getBufCached(this.map.uri, this.map.range) : null;
@@ -3255,8 +3465,49 @@
 
     if (this.autoPlay) {
       this.autoPlay = false;
-      safePlay(this.video);
+      if (!userPaused) safePlay(this.video);
     }
+  };
+
+  // 点播最后一段的真实长度经常比 EXTINF 短一点（本地流 39.8s vs 40s），
+  // 如果按 40s 标终点，播放会永远卡在 39.8s 转圈。全部下载完后用真实缓冲末尾收尾。
+  HlsPlayer.prototype.finalizeDuration = function () {
+    var self = this;
+    if (this.dead || !this.ms || !(this.endlist && this.total > 0)) return;
+    var ms0 = this.ms, sb0 = this.sb, myGen = this.gen;
+    var tries = 0;
+    function run() {
+      if (self.dead || self.gen !== myGen || self.ms !== ms0) return;
+      if (sb0 && sb0.updating) {
+        if (tries++ < 40) setTimeout(run, 50);
+        return;
+      }
+      var end = 0;
+      try {
+        var b = (sb0 && sb0.buffered) || (self.video && self.video.buffered);
+        if (b && b.length) end = b.end(b.length - 1);
+      } catch (e) { return; }
+      if (!end) return;
+      var expected = self.total + Math.max(0, self.ptsOffset || 0);
+      if (Math.abs(end - expected) > 2) return;
+      try { ms0.duration = end; return; } catch (e) {}
+
+      // Chrome 不允许 duration 低于最后已编码帧的 PTS；先把尾巴 remove 掉再设
+      try {
+        var oldDur = expected;
+        try { oldDur = ms0.duration || expected; } catch (e) {}
+        if (!(end < oldDur)) return;
+        var onUp = function () {
+          try { sb0.removeEventListener('updateend', onUp); } catch (e) {}
+          if (self.dead || self.gen !== myGen || self.ms !== ms0) return;
+          try { ms0.duration = end; } catch (e2) {}
+        };
+        sb0.addEventListener('updateend', onUp);
+        try { sb0.remove(end, oldDur); }
+        catch (e) { try { sb0.removeEventListener('updateend', onUp); } catch (e2) {} }
+      } catch (e) {}
+    }
+    run();
   };
 
   // SourceBuffer 正在 append 时设 duration 会抛 InvalidStateError，等它空闲再设
@@ -3281,6 +3532,9 @@
         // 点播已经用 duration 标了终点：保持 open，之后往回/往前跳还能继续 append
         if (!(self.endlist && self.total > 0)) {
           try { if (self.ms && self.ms.readyState === 'open') self.ms.endOfStream(); } catch (e) {}
+        } else {
+          self.finished = true;
+          if (self.finalizeDuration) self.finalizeDuration();
         }
         return;
       }
