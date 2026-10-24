@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频提取器 · 万能播放/下载
 // @namespace    local.xbrowser.videokit
-// @version      2.9.0
+// @version      2.9.1
 // @description  自动嗅探网页视频（直链 / m3u8 / MSE 流），自带播放器（倍速、清晰度切换、全片拖动），多线程下载并合并为 mp4。
 // @author       me
 // @match        *://*/*
@@ -31,7 +31,7 @@
   try { IS_TOP = (window.top === window.self); } catch (e) { IS_TOP = false; }
 
   var MAX_ITEMS = 40;
-  var VERSION = '2.9.0';
+  var VERSION = '2.9.1';
 
   // ---- 设置 ----
   var CFG_KEY = 'xbvk.cfg';
@@ -661,15 +661,16 @@
     '.hd h3{margin:0;font-size:15px;font-weight:650;flex:1;letter-spacing:.3px}',
     '.hd .cnt{font-size:12px;color:#8b93a1}',
     '.hd button{background:rgba(255,255,255,.07);border:0;color:#c4cbd6;border-radius:8px;padding:6px 10px;',
-    'font-size:12px;font-weight:500;transition:background .15s}',
-    '.hd button:active{background:rgba(255,255,255,.16)}',
+    'font-size:12px;font-weight:500;transition:background .15s,transform .12s}',
+    '.hd button:active{background:rgba(255,255,255,.16);transform:scale(.95)}',
     '.hint{padding:2px 18px 8px;font-size:11px;color:#6f7683}',
     '.list{overflow-y:auto;-webkit-overflow-scrolling:touch;padding:4px 12px 10px}',
     '.empty{padding:24px 20px;color:#8b93a1;font-size:13px;text-align:center;line-height:1.8}',
     '.empty svg{display:block;margin:0 auto 10px;opacity:.85}',
     '.empty b{color:#cfd5de;font-weight:600}',
     '.empty .mini{margin-top:12px;height:34px;padding:0 18px;border-radius:9px;border:1px solid rgba(255,255,255,.14);',
-    'background:rgba(255,255,255,.07);color:#dde2ea;font-size:12.5px}',
+    'background:rgba(255,255,255,.07);color:#dde2ea;font-size:12.5px;transition:transform .12s,background .15s}',
+    '.empty .mini:active{transform:scale(.95);background:rgba(255,255,255,.13)}',
     // 列表项卡片化：圆角小卡 + 按压反馈，比通栏分隔线更透气
     '.it{background:rgba(255,255,255,.045);border:0;border-radius:12px;margin-bottom:8px;padding:11px 12px;',
     'transition:background .15s}',
@@ -684,15 +685,17 @@
     '.u{font-size:11px;color:#6d7480;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:8px;direction:rtl;text-align:left}',
     '.acts{display:flex;gap:8px}',
     '.acts button{flex:1;height:34px;border-radius:9px;border:1px solid rgba(255,255,255,.1);',
-    'background:rgba(255,255,255,.06);color:#dde2ea;font-size:12.5px;font-weight:500;transition:background .15s}',
-    '.acts button:active{background:rgba(255,255,255,.14)}',
+    'background:rgba(255,255,255,.06);color:#dde2ea;font-size:12.5px;font-weight:500;',
+    'transition:background .15s,transform .12s}',
+    '.acts button:active{background:rgba(255,255,255,.14);transform:scale(.97)}',
     '.acts button.pri{background:linear-gradient(135deg,#ff8cab,#fb7299);border:0;color:#fff;',
     'box-shadow:0 3px 12px rgba(251,114,153,.32)}',
-    '.acts button.pri:active{filter:brightness(1.12)}',
+    '.acts button.pri:active{filter:brightness(1.12);transform:scale(.97)}',
     '.ft{padding:10px 16px 4px;display:flex;gap:8px;align-items:center}',
     '.ft .ver{font-style:normal;font-size:10px;color:#5d6470;flex:none}',
     '.ft button{flex:1;height:38px;border-radius:10px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);',
-    'color:#cfd5de;font-size:13px}',
+    'color:#cfd5de;font-size:13px;transition:background .15s,transform .12s}',
+    '.ft button:active{background:rgba(255,255,255,.12);transform:scale(.98)}',
     '.pl{position:fixed;inset:0;background:#000;display:none;flex-direction:column;pointer-events:auto;z-index:3;overscroll-behavior:contain}',
     '.pl.open{display:flex}',
     '.pl.embed{border-radius:10px;overflow:hidden;box-shadow:0 10px 34px rgba(0,0,0,.55)}',
@@ -821,6 +824,22 @@
     'font:12.5px/1.4 -apple-system,"PingFang SC","Noto Sans SC",sans-serif}',
     '.pl .pmenu.on{display:block;animation:xbmenupop .16s ease-out}',
     '@keyframes xbmenupop{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}',
+    // ---- 丝滑细节：入场动画 / 按压反馈 / 隐藏滚动条 ----
+    '@keyframes xbit{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}',
+    '.pl.open{animation:xbplfade .2s ease-out}',
+    '@keyframes xbplfade{from{opacity:0}to{opacity:1}}',
+    '.pl .freeze{animation:xbfdin .16s ease-out}',
+    '@keyframes xbfdin{from{opacity:.35}to{opacity:1}}',
+    '.set.open .sbody>*{animation:xbit .2s ease-out backwards}',
+    '.set.open .sbody>*:nth-child(2){animation-delay:25ms}',
+    '.set.open .sbody>*:nth-child(3){animation-delay:50ms}',
+    '.set.open .sbody>*:nth-child(4){animation-delay:75ms}',
+    '.set.open .sbody>*:nth-child(5){animation-delay:100ms}',
+    '.set.open .sbody>*:nth-child(6){animation-delay:125ms}',
+    '.set.open .sbody>*:nth-child(7){animation-delay:150ms}',
+    '.set.open .sbody>*:nth-child(8){animation-delay:175ms}',
+    '.set.open .sbody>*:nth-child(9){animation-delay:200ms}',
+    '.sheet .list::-webkit-scrollbar,.set .sbody::-webkit-scrollbar,.pl .pmenu::-webkit-scrollbar{display:none}',
     '.pl .pmenu .pmt{font-size:10.5px;color:#8b93a1;padding:2px 6px 7px;letter-spacing:.3px}',
     '.pl .pmenu button{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;height:32px;',
     'padding:0 9px;border:0;border-radius:7px;background:transparent;color:#e9ebef;font-size:12.5px;text-align:left}',
@@ -842,9 +861,11 @@
     '.pg.on{display:block}',
     '.pg .row{display:flex;align-items:center;gap:10px;margin-bottom:8px}',
     '.pg .row span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-    '.pg .row button{background:rgba(255,255,255,.1);border:0;color:#cfd5de;border-radius:7px;padding:4px 9px;font-size:11.5px}',
+    '.pg .row button{background:rgba(255,255,255,.1);border:0;color:#cfd5de;border-radius:7px;padding:4px 9px;',
+    'font-size:11.5px;transition:transform .12s,background .15s}',
+    '.pg .row button:active{transform:scale(.95);background:rgba(255,255,255,.18)}',
     '.pg .track{height:4px;border-radius:2px;background:rgba(255,255,255,.12);overflow:hidden}',
-    '.pg .fill{height:100%;width:0;background:linear-gradient(90deg,#ff8cab,#fb7299);transition:width .18s}',
+    '.pg .fill{height:100%;width:0;background:linear-gradient(90deg,#ff8cab,#fb7299);transition:width .25s linear}',
     '.pg .sub{font-size:11px;color:#8b93a1;margin-bottom:8px}',
     '.pg .sub:empty{display:none}',
     // 设置面板
@@ -1112,11 +1133,46 @@
         knob: playerEl.querySelector('.seek .knob'),
         buf: playerEl.querySelector('.seek .buf'),
         tm: playerEl.querySelector('.tm'),
+        tip: playerEl.querySelector('.seek .tip'),
         toggle: playerEl.querySelector('.ctlrow [data-a="toggle"]'),
         mfill: playerEl.querySelector('.mtrack b')   // 小窗模式的细进度线
       };
     }
     return pctl;
+  }
+
+  // ---- 丝滑进度：手机内核的 timeupdate 只有 4Hz 左右，进度条直接跟着走会一顿一顿。
+  // 播放期间用 rAF 逐帧刷（拖动/跳转/原生 seeking 期间让位给 seekUI，别抢显示权）
+  var smoothRaf = 0;
+  function rafNext(fn) {
+    if (window.requestAnimationFrame) return window.requestAnimationFrame(fn);
+    return setTimeout(fn, 16);
+  }
+  function smoothTick() {
+    if (!playerOpen || !videoEl || videoEl.paused) { smoothRaf = 0; return; }
+    if (!seekBusy() && !seekUI.pending && !videoEl.seeking) {
+      var n = pctlNodes();
+      if (n) {
+        var dur = playerDur() || seekUI.lastDur;
+        var pos = Math.max(0, (videoEl.currentTime || 0) - playerOff());
+        var pct = dur ? Math.min(1, Math.max(0, pos / dur)) : 0;
+        n.bar.style.width = (pct * 100).toFixed(3) + '%';
+        n.knob.style.left = (pct * 100).toFixed(3) + '%';
+        if (n.mfill) n.mfill.style.width = (pct * 100).toFixed(3) + '%';
+        n.tm.textContent = fmtTime(pos) + ' / ' + fmtTime(dur);
+      }
+    }
+    smoothRaf = rafNext(smoothTick);
+  }
+  function startSmooth() {
+    if (smoothRaf) return;
+    smoothRaf = rafNext(smoothTick);
+  }
+  function stopSmooth() {
+    if (!smoothRaf) return;
+    try { cancelAnimationFrame(smoothRaf); } catch (e) {}
+    try { clearTimeout(smoothRaf); } catch (e) {}
+    smoothRaf = 0;
   }
 
   function syncProgress() {
@@ -1816,18 +1872,17 @@
       var shownDur = dur || seekUI.lastDur;
       seekUI.ratio = ratio;
       seekUI.target = ratio * shownDur;
-      var bar = playerEl.querySelector('.seek .bar');
-      var knob = playerEl.querySelector('.seek .knob');
-      if (bar) bar.style.width = (ratio * 100).toFixed(2) + '%';
-      if (knob) knob.style.left = (ratio * 100).toFixed(2) + '%';
-      if (seekBar) seekBar.classList.toggle('on', !!seekUI.dragging);
-      var tip = playerEl.querySelector('.seek .tip');
-      if (tip) {
-        tip.textContent = fmtTime(seekUI.target);
-        tip.style.left = (Math.max(0.06, Math.min(0.94, ratio)) * 100).toFixed(2) + '%';
+      var n = pctlNodes();
+      if (n) {
+        n.bar.style.width = (ratio * 100).toFixed(2) + '%';
+        n.knob.style.left = (ratio * 100).toFixed(2) + '%';
+        n.tm.textContent = fmtTime(seekUI.target) + ' / ' + fmtTime(shownDur);
+        if (n.tip) {
+          n.tip.textContent = fmtTime(seekUI.target);
+          n.tip.style.left = (Math.max(0.06, Math.min(0.94, ratio)) * 100).toFixed(2) + '%';
+        }
       }
-      var tm = playerEl.querySelector('.tm');
-      if (tm) tm.textContent = fmtTime(seekUI.target) + ' / ' + fmtTime(shownDur);
+      if (seekBar) seekBar.classList.toggle('on', !!seekUI.dragging);
       // 拖动时预取目标分片，松手就能立刻出画
       if (hls && seekUI.target) hls.prefetchAt(seekUI.target);
     }
@@ -2005,6 +2060,7 @@
       userPaused = false;
       forcedEnded = false;
       try { videoEl.playbackRate = SPEEDS[speedIdx]; } catch (e) {}
+      startSmooth();   // 逐帧刷进度条
       // 开播后重挂自动隐藏计时：小窗/全屏要在播放中把控件收起来（加载期不算）
       if (playerOpen) showUI();
     });
@@ -2209,6 +2265,7 @@
     scanDom();
     sheetOpen = true;
     uiGuardUntil = Date.now() + 450;   // 吃掉 touchend 之后补发的那次 click
+    listFresh = true;                  // 首次打开：卡片交错入场（面板开着时的刷新不重播）
     renderList();
     sheetEl.classList.add('open');
     ui.mask.classList.add('on');
@@ -2277,6 +2334,7 @@
   }
 
   var renderPending = false;
+  var listFresh = false;   // 列表卡片是否交错入场（只在面板刚打开时）
   // 面板开着时，一帧内的多次变更合并成一次重排
   function scheduleRender() {
     if (!sheetOpen || renderPending) return;
@@ -2314,8 +2372,11 @@
 
     listEl.innerHTML = '';
     for (var i = 0; i < arr.length; i++) {
-      listEl.appendChild(renderItem(arr[i]));
+      var row = renderItem(arr[i]);
+      if (listFresh) row.style.animation = 'xbit .22s ease-out ' + Math.min(i, 8) * 30 + 'ms backwards';
+      listEl.appendChild(row);
     }
+    listFresh = false;
   }
 
   function renderItem(it) {
@@ -2543,6 +2604,7 @@
     userPaused = false;
     forcedEnded = false;
     if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
+    stopSmooth();
     try {
       videoEl.pause();
       videoEl.removeAttribute('src');
