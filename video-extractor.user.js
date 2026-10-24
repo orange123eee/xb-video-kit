@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频提取器 · 万能播放/下载
 // @namespace    local.xbrowser.videokit
-// @version      2.7.1
+// @version      2.8.0
 // @description  自动嗅探网页视频（直链 / m3u8 / MSE 流），自带播放器（倍速、清晰度切换、全片拖动），多线程下载并合并为 mp4。
 // @author       me
 // @match        *://*/*
@@ -31,7 +31,7 @@
   try { IS_TOP = (window.top === window.self); } catch (e) { IS_TOP = false; }
 
   var MAX_ITEMS = 40;
-  var VERSION = '2.7.1';
+  var VERSION = '2.8.0';
 
   // ---- 设置 ----
   var CFG_KEY = 'xbvk.cfg';
@@ -150,10 +150,15 @@
     segCache.set(key, { buf: buf, ts: Date.now() });
     segCacheBytes += buf.byteLength;
     while (segCacheBytes > SEG_CACHE_MAX && segCache.size > 1) {
-      var first = segCache.keys().next().value;
-      var v = segCache.get(first);
+      // 淘汰最久没被用到的（LRU）：往回拖、重看时刚碰过的分片能活下来
+      var oldest = null, oldestTs = Infinity;
+      segCache.forEach(function (v, k) {
+        if (v && v.ts < oldestTs) { oldestTs = v.ts; oldest = k; }
+      });
+      if (oldest == null) break;
+      var v = segCache.get(oldest);
       segCacheBytes -= (v && v.buf && v.buf.byteLength) || 0;
-      segCache.delete(first);
+      segCache.delete(oldest);
     }
   }
 
@@ -173,6 +178,27 @@
     if (n < 1048576) return (n / 1024).toFixed(0) + 'KB';
     if (n < 1073741824) return (n / 1048576).toFixed(1) + 'MB';
     return (n / 1073741824).toFixed(2) + 'GB';
+  }
+  function fmtRate(bps) {
+    if (!bps || bps < 1) return '';
+    if (bps < 1048576) return Math.round(bps / 1024) + 'KB/s';
+    return (bps / 1048576).toFixed(1) + 'MB/s';
+  }
+  function fmtEta(sec) {
+    if (!isFinite(sec) || sec < 0) return '';
+    if (sec < 60) return Math.ceil(sec) + ' 秒';
+    if (sec < 3600) return Math.round(sec / 60) + ' 分钟';
+    return (sec / 3600).toFixed(1) + ' 小时';
+  }
+  // 下载速度：最近 3 秒滑动窗口；起步半秒内不算（瞬时值没意义）
+  function rateTracker() {
+    var win = [];
+    return function (now, bytes) {
+      win.push([now, bytes]);
+      while (win.length > 1 && now - win[0][0] > 3000) win.shift();
+      var span = now - win[0][0];
+      return span > 500 ? (bytes - win[0][1]) * 1000 / span : 0;
+    };
   }
 
   function sanitize(s) {
@@ -785,6 +811,8 @@
     '.pg .row button{background:rgba(255,255,255,.1);border:0;color:#cfd5de;border-radius:7px;padding:4px 9px;font-size:11.5px}',
     '.pg .track{height:4px;border-radius:2px;background:rgba(255,255,255,.12);overflow:hidden}',
     '.pg .fill{height:100%;width:0;background:#4f8cff;transition:width .18s}',
+    '.pg .sub{font-size:11px;color:#8b93a1;margin-bottom:8px}',
+    '.pg .sub:empty{display:none}',
     // 设置面板
     '.set{position:fixed;left:0;right:0;bottom:0;background:#16181d;color:#e9ebef;border-radius:18px 18px 0 0;z-index:12;',
     'transform:translateY(105%);transition:transform .24s cubic-bezier(.2,.85,.25,1);pointer-events:auto;',
@@ -811,10 +839,10 @@
     '.srow .csz{font-style:normal;color:#8b93a1;font-size:12px}',
     '.srow .mini{height:28px;padding:0 12px;border-radius:8px;border:1px solid rgba(255,255,255,.14);',
     'background:rgba(255,255,255,.07);color:#cfd5de;font-size:12px}',
-    // 窄屏：段数状态和间距让一让，别把控制栏挤爆
+    // 窄屏：段数状态缩小保留（藏掉的话错误/恢复提示就彻底看不见了），间距让一让
     '@media (max-width:400px){',
     '.pl .ctlrow{gap:5px}',
-    '.pl .ctlrow .stat{display:none}',
+    '.pl .ctlrow .stat{font-size:9px;max-width:60px}',
     '.pl .ctlrow .tm{font-size:10.5px}',
     '.pl .ctlrow button[data-a="q"]{padding:0 7px}',
     '}',
@@ -952,6 +980,7 @@
     progressEl.className = 'pg';
     progressEl.innerHTML =
       '<div class="row"><span class="txt">准备中…</span><button data-a="cancel">取消</button></div>' +
+      '<div class="sub"></div>' +
       '<div class="track"><i class="fill"></i></div>';
     root.appendChild(progressEl);
 
@@ -1031,6 +1060,22 @@
     var c = playerEl.querySelector('.freeze');
     if (c) c.style.display = 'none';
   }
+  // 控件节点缓存：syncProgress 每个播放事件都要跑，别每次都进 Shadow DOM 查一遍。
+  // playerEl 的结构建好之后不再重建，缓存可以一直用
+  var pctl = null;
+  function pctlNodes() {
+    if (!pctl && playerEl) {
+      pctl = {
+        bar: playerEl.querySelector('.seek .bar'),
+        knob: playerEl.querySelector('.seek .knob'),
+        buf: playerEl.querySelector('.seek .buf'),
+        tm: playerEl.querySelector('.tm'),
+        toggle: playerEl.querySelector('.ctlrow [data-a="toggle"]')
+      };
+    }
+    return pctl;
+  }
+
   function syncProgress() {
     if (!playerOpen || !playerEl || !videoEl) return;
     if (seekBusy()) return;      // 手指按在进度条上时，播放事件不许改滑块
@@ -1064,27 +1109,22 @@
 
     var pct = dur ? Math.min(1, Math.max(0, pos / dur)) : 0;
 
-    var bar = playerEl.querySelector('.seek .bar');
-    var knob = playerEl.querySelector('.seek .knob');
-    if (bar) bar.style.width = (pct * 100).toFixed(2) + '%';
-    if (knob) knob.style.left = (pct * 100).toFixed(2) + '%';
+    var n = pctlNodes();
+    if (!n) return;
+    n.bar.style.width = (pct * 100).toFixed(2) + '%';
+    n.knob.style.left = (pct * 100).toFixed(2) + '%';
 
-    var bufEl = playerEl.querySelector('.seek .buf');
-    if (bufEl) {
-      var end = 0;
-      try {
-        var b = videoEl.buffered;
-        for (var i = 0; i < b.length; i++) {
-          if (b.start(i) <= videoEl.currentTime + 0.6) end = Math.max(end, b.end(i));
-        }
-      } catch (e) {}
-      var bp = dur ? Math.min(1, Math.max(0, (end - playerOff()) / dur)) : 0;
-      bufEl.style.width = (bp * 100).toFixed(2) + '%';
-    }
-    var tm = playerEl.querySelector('.tm');
-    if (tm) tm.textContent = fmtTime(pos) + ' / ' + fmtTime(dur);
-    var tb = playerEl.querySelector('.ctlrow [data-a="toggle"]');
-    if (tb) tb.innerHTML = videoEl.paused ? ICON.play : ICON.pause;
+    var end = 0;
+    try {
+      var b = videoEl.buffered;
+      for (var i = 0; i < b.length; i++) {
+        if (b.start(i) <= videoEl.currentTime + 0.6) end = Math.max(end, b.end(i));
+      }
+    } catch (e) {}
+    var bp = dur ? Math.min(1, Math.max(0, (end - playerOff()) / dur)) : 0;
+    n.buf.style.width = (bp * 100).toFixed(2) + '%';
+    n.tm.textContent = fmtTime(pos) + ' / ' + fmtTime(dur);
+    n.toggle.innerHTML = videoEl.paused ? ICON.play : ICON.pause;
     playerEl.classList.toggle('paused', !!videoEl.paused);
     playerEl.classList.toggle('ended', !!videoEl.ended || forcedEnded);
     if (!seekUI.pending) { seekUI.hard = false; }
@@ -1989,7 +2029,9 @@
         if (!hls.transmux && !hls.triedTransmux) {
           hls.triedTransmux = true;
           toast('换个解码方式…');
-          hls.forceTransmux(at).catch(function () {});
+          hls.forceTransmux(at).catch(function () {
+            toastErr('自动恢复没成功，拖动进度条可重试，或直接下载');
+          });
           return;
         }
         // 第二步：已经正常播过的，只在原地重建，绝不关掉播放器
@@ -1997,7 +2039,9 @@
           if ((hls.recover || 0) < 3) {
             hls.recover = (hls.recover || 0) + 1;
             toast('画面出错，正在恢复…');
-            hls.reloadAt(at).catch(function () {});
+            hls.reloadAt(at).catch(function () {
+              toastErr('自动恢复没成功，拖动进度条可重试，或直接下载');
+            });
             return;
           }
           toast('播放出错，拖一下进度条可以重试');
@@ -2006,7 +2050,9 @@
         // 第三步：刚打开就失败，再重建一次
         if (!hls.retried) {
           hls.retried = true;
-          hls.reloadAt(at).catch(function () {});
+          hls.reloadAt(at).catch(function () {
+            toastErr('自动恢复没成功，拖动进度条可重试，或直接下载');
+          });
           return;
         }
       }
@@ -2061,18 +2107,24 @@
     setTimeout(function () { if (fabEl) fabEl.classList.remove('tipon'); }, 9000);
   }
 
-  // 装好/升级后弹一次原生提示：alert 不受页面样式和层级影响，能弹出来就说明脚本真的在跑
+  // 首次安装用原生 alert：不受页面样式和层级影响，能弹出来就说明脚本真的在跑；
+  // 之后的版本更新只 toast 一下，不再打断
   function helloOnce() {
+    var prev = null;
     try {
-      if (localStorage.getItem('xbvk.hello') === VERSION) return;
+      prev = localStorage.getItem('xbvk.hello');
       localStorage.setItem('xbvk.hello', VERSION);
     } catch (e) { return; }
     setTimeout(function () {
       try {
-        alert('视频提取 v' + VERSION + ' 已启动\n\n' +
-          '· 网页开始播放时，自动用内置播放器接管那块画面\n' +
-          '· 右下角「视频」按钮：点一下全屏播放，长按看列表\n\n' +
-          '看到这个弹窗，说明脚本运行正常。');
+        if (prev === null) {
+          alert('视频提取 v' + VERSION + ' 已启动\n\n' +
+            '· 网页开始播放时，自动用内置播放器接管那块画面\n' +
+            '· 右下角「视频」按钮：点一下全屏播放，长按看列表\n\n' +
+            '看到这个弹窗，说明脚本运行正常。');
+        } else if (prev !== VERSION) {
+          toast('视频提取已更新到 v' + VERSION);
+        }
       } catch (e) {}
     }, 1500);
   }
@@ -2281,23 +2333,41 @@
     toastTimer = setTimeout(function () { toastEl.classList.remove('on'); }, 2600);
   }
 
+  // 错误类状态除了写 .stat 还要 toast：.stat 在窄屏/嵌入模式下看不见，
+  // 只写它的话用户只会觉得"卡住没反应"。恢复链路可能连续失败，同文案 3 秒内不重复弹
+  var lastErrMsg = '', lastErrAt = 0;
+  function toastErr(msg) {
+    var now = Date.now();
+    if (msg === lastErrMsg && now - lastErrAt < 3000) return;
+    lastErrMsg = msg;
+    lastErrAt = now;
+    toast(msg);
+  }
+
   function showProgress(title) {
     buildUI();
     progressEl.classList.add('on');
     var txt = progressEl.querySelector('.txt');
     var fill = progressEl.querySelector('.fill');
+    var sub = progressEl.querySelector('.sub');
     txt.textContent = title;
     fill.style.width = '0%';
+    sub.textContent = '';
     var obj = {
       cancelled: false,
       onCancel: null,
       set: function (t) { txt.textContent = t; },
+      sub: function (s) { sub.textContent = s || ''; },
       progress: function (cur, total) {
         var p = total ? Math.min(100, cur / total * 100) : 0;
         fill.style.width = p.toFixed(1) + '%';
         txt.textContent = title + '  ' + cur + '/' + total;
       },
-      close: function () { progressEl.classList.remove('on'); progressEl.__cancel = null; }
+      close: function () {
+        progressEl.classList.remove('on');
+        progressEl.__cancel = null;
+        sub.textContent = '';
+      }
     };
     progressEl.__cancel = function () {
       obj.cancelled = true;
@@ -2457,7 +2527,10 @@
         try {
           v.muted = true;
           var p2 = v.play();
-          if (p2 && p2.catch) p2.catch(function () {});
+          if (p2 && p2.catch) p2.catch(function () {
+            // 连静音都播不了：提示用户点一下，别让画面黑着没动静
+            toast('自动播放被拦，点一下画面开始');
+          });
           toast('内核限制了自动播放，已静音播放（可点音量开启声音）');
         } catch (err) {}
       }
@@ -2585,19 +2658,19 @@
       stat.textContent = '解析播放列表…';
       var inst = new HlsPlayer(it.url, videoEl, function (s) {
         if (s && s.total) stat.textContent = s.buffered + '/' + s.total + ' 段';
-        else if (s && s.msg) stat.textContent = s.msg;
+        else if (s && s.msg) {
+          stat.textContent = s.msg;
+          if (s.err) toastErr(s.msg);
+        }
       });
       hls = inst;
       var resume = cfg.resume ? loadPlayPos(it) : 0;
-      inst.start().then(function () {
+      inst.start(resume, Number(cfg.skipIntro) || 0).then(function () {
         stat.textContent = '';
         updateQualityBtn(inst);
-        // 上次看到结尾附近就别续播了，直接从头开始
-        if (resume > 5 && (!inst.total || resume < inst.total - 15)) {
-          inst.seekTo(resume);
+        // 实际起播位置就是续播点时才提示（贴近结尾的进度在 start 里视为已看完）
+        if (inst.startedAt > 0 && inst.startedAt === resume) {
           setTimeout(function () { toast('从上次的 ' + fmtTime(resume) + ' 继续'); }, 1200);
-        } else if (Number(cfg.skipIntro) > 0 && (!inst.total || cfg.skipIntro < inst.total - 30)) {
-          inst.seekTo(Number(cfg.skipIntro));
         }
       }, function (err) {
         stat.textContent = '';
@@ -3066,9 +3139,12 @@
     this.softFailed = false;
     this.hardRetried = false;
     this.finished = false;    // 点播分片已经全部处理完
+    this.startedAt = 0;       // 实际起播位置（续播/跳片头生效时 > 0）
   }
 
-  HlsPlayer.prototype.start = function () {
+  // at：续播位置；skip：跳片头秒数。有起播位置就直接从目标分片装载，
+  // 免得先从头建一次 MSE、再因 ptsOffset 未对齐整体重建一遍（那是双倍等待）
+  HlsPlayer.prototype.start = function (at, skip) {
     var self = this;
     return getPlaylist(this.url).then(function (c) {
       var r = c.r, pl = c.pl;
@@ -3096,7 +3172,12 @@
       if (!mime) throw new Error('内核不支持该封装（可能是 HEVC）');
       self.mime = mime;
       self.bindSeek();
-      return self.load(0, null);
+      var t = 0;
+      // 看到结尾附近的进度视为已看完，从头开始
+      if (at > 5 && (!self.total || at < self.total - 15)) t = at;
+      else if (skip > 0 && (!self.total || skip < self.total - 30)) t = skip;
+      self.startedAt = t;
+      return t > 0 ? self.load(findSegIndex(self.segs, t), t) : self.load(0, null);
     });
   };
 
@@ -3221,14 +3302,14 @@
     if (this.transmux) {
       if (!this.seekTransmux(t)) {
         var self0 = this;
-        this.load(i, t).catch(function () { self0.onState({ msg: '跳转失败，请重试' }); });
+        this.load(i, t).catch(function () { self0.onState({ msg: '跳转失败，请重试', err: true }); });
       }
       return;
     }
 
     if (!this.sb || !this.ms || this.ms.readyState !== 'open' || this.ptsOffset == null) {
       var self1 = this;
-      this.load(i, t).catch(function () { self1.onState({ msg: '跳转失败，请重试' }); });
+      this.load(i, t).catch(function () { self1.onState({ msg: '跳转失败，请重试', err: true }); });
       return;
     }
 
@@ -3406,6 +3487,7 @@
     var myGen = this.gen;
     var key = cacheKey(seg.url, seg.range);
     var hit = segCache.get(key);
+    if (hit) hit.ts = Date.now();   // LRU：刚用过的分片不该先被淘汰
     var p = hit
       ? Promise.resolve(hit.buf)
       : fetchBuf(seg.url, { range: seg.range, signal: signal }).then(function (buf) {
@@ -3605,7 +3687,7 @@
             retryP = self.load(findSegIndex(self.segs, softT), softT);
           }
           retryP.catch(function () {
-            self.onState({ msg: '跳转失败，请重试' });
+            self.onState({ msg: '跳转失败，请重试', err: true });
           });
           return;
         }
@@ -3621,12 +3703,12 @@
                 : Math.max(0, (self.video.currentTime || 0) - (self.ptsOffset || 0));
               self.onState({ msg: '正在恢复…' });
               self.load(findSegIndex(self.segs, rt), rt).catch(function () {
-                self.onState({ msg: '跳转失败，请重试' });
+                self.onState({ msg: '跳转失败，请重试', err: true });
               });
               return;
             }
             self.dead = true;
-            self.onState({ msg: '解码失败，请重试或下载' });
+            self.onState({ msg: '解码失败，请重试或下载', err: true });
             return;
           }
           i++;
@@ -3659,10 +3741,13 @@
     a.rel = 'noopener';
     a.style.display = 'none';
     (document.body || document.documentElement).appendChild(a);
-    try { a.click(); } catch (e) {}
+    var ok = false;
+    try { a.click(); ok = true; } catch (e) {}
     setTimeout(function () { try { a.remove(); } catch (e) {} }, 8000);
     setTimeout(function () { try { URL.revokeObjectURL(url); } catch (e) {} }, 600000);
-    toast('已保存：' + name + '（没反应就长按链接另存）');
+    // click 抛错说明保存链路被拦了，不能再报"已保存"骗人
+    if (ok) toast('已保存：' + name + '（没反应就长按链接另存）');
+    else toast('保存没成功，请长按视频链接另存');
   }
 
   function anchorDownload(url, name) {
@@ -3679,9 +3764,9 @@
 
   // 直链的尺寸常常拿不到（<video src> 不经过 fetch），先探一次 Content-Length
   function probeSize(url) {
-    // 探测只是优化：挂住或被墙都不能卡住下载，8 秒拿不到就按未知大小走
+    // 探测只是优化：挂住或被墙都不能卡住下载，4 秒拿不到就按未知大小走
     var ctrl = new AbortController();
-    var timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 8000);
+    var timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 4000);
     function done(n) { clearTimeout(timer); return n; }
     return netFetch(url, { method: 'HEAD', credentials: 'same-origin', signal: ctrl.signal })
       .then(function (r) {
@@ -3703,7 +3788,10 @@
     var ctrl = new AbortController();
     pg.onCancel = function () { try { ctrl.abort(); } catch (e) {} };
 
-    (it.size ? Promise.resolve(it.size) : probeSize(it.url)).then(function (known) {
+    var sizeP;
+    if (it.size) sizeP = Promise.resolve(it.size);
+    else { pg.set('探测文件大小…'); sizeP = probeSize(it.url); }
+    sizeP.then(function (known) {
       // 直链大文件交给浏览器下载器：内存占用低、能后台续传，通常还是多线程的
       if (known > 150 * 1024 * 1024) {
         anchorDownload(it.url, name + extOf(it));
@@ -3725,6 +3813,7 @@
         var bucketBytes = 0;
         var got = 0;
         var lastPaint = 0;
+        var rate = rateTracker();
 
         function flushBucket() {
           if (!chunks.length) return;
@@ -3746,10 +3835,16 @@
             if (bucketBytes > 16 * 1024 * 1024) flushBucket();
 
             var now = Date.now();
-            if (now - lastPaint > 120) {
+            if (now - lastPaint > 250) {
               lastPaint = now;
-              if (total) pg.progress(got, total);
-              else pg.set('已下载 ' + fmtBytes(got));
+              var bps = rate(now, got);
+              if (total) {
+                pg.progress(got, total);
+                pg.sub(fmtRate(bps) + (bps > 0 ? ' · 剩余 ' + fmtEta((total - got) / bps) : ''));
+              } else {
+                pg.set('已下载 ' + fmtBytes(got));
+                pg.sub(fmtRate(bps));
+              }
             }
             return loop();
           });
@@ -3868,6 +3963,7 @@
 
     var name = it.title || 'video';
     var tasks = [], results = [], pl = null, doneCount = 0, failed = 0, streak = 0;
+    var gotBytes = 0, lastPaint = 0, rate = rateTracker();
     var THREADS = 6;
 
     function grab(t, attempt) {
@@ -3921,7 +4017,13 @@
           // 一律固化成 Blob：交给浏览器的 blob 存储管理（大了会落盘），
           // 后面无论是拼 mp4 还是回退成 ts 都能直接用，也不会因为置空而丢数据
           results[idx] = buf ? new Blob([buf]) : null;
+          gotBytes += (buf && buf.byteLength) || 0;
           doneCount++;
+          var now = Date.now();
+          if (now - lastPaint > 250) {
+            lastPaint = now;
+            pg.sub(fmtRate(rate(now, gotBytes)) + ' · 已 ' + fmtBytes(gotBytes));
+          }
           pg.progress(doneCount, tasks.length);
           return worker();
         });
@@ -3956,6 +4058,7 @@
       }
 
       pg.set('正在转封装为 MP4…');
+      pg.sub('');
       return remuxToMp4(parts, function (cur, total) { pg.progress(cur, total); }).then(function (blob) {
         if (!blob || blob.size < totalBytes * 0.4) throw new Error('输出异常');
         saveBlob(blob, name + '.mp4');
