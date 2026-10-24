@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频提取器 · 万能播放/下载
 // @namespace    local.xbrowser.videokit
-// @version      2.7.0
+// @version      2.7.1
 // @description  自动嗅探网页视频（直链 / m3u8 / MSE 流），自带播放器（倍速、清晰度切换、全片拖动），多线程下载并合并为 mp4。
 // @author       me
 // @match        *://*/*
@@ -31,7 +31,7 @@
   try { IS_TOP = (window.top === window.self); } catch (e) { IS_TOP = false; }
 
   var MAX_ITEMS = 40;
-  var VERSION = '2.7.0';
+  var VERSION = '2.7.1';
 
   // ---- 设置 ----
   var CFG_KEY = 'xbvk.cfg';
@@ -417,8 +417,8 @@
   }
 
   function trimBlobs() {
-    // 页面可能不停地 createObjectURL，只留最近 6 个，避免内存无限涨
-    while (blobs.size > 6) blobs.delete(blobs.keys().next().value);
+    // 页面可能不停地 createObjectURL，只留最近 3 个，避免内存无限涨
+    while (blobs.size > 3) blobs.delete(blobs.keys().next().value);
   }
 
   function hookObjectUrl() {
@@ -432,8 +432,8 @@
           trimBlobs();
         } else if (window.Blob && obj instanceof Blob) {
           var t = obj.type || '';
-          // 只留最近的小体积视频 Blob，超大对象交给页面自己管，别把内存顶爆
-          if ((t.indexOf('video/') === 0 || t.indexOf('audio/') === 0) && obj.size < 256 * 1024 * 1024) {
+          // 只留最近的小体积视频 Blob，超大对象交给页面自己管，别把内存顶爆（3×64MB 封顶）
+          if ((t.indexOf('video/') === 0 || t.indexOf('audio/') === 0) && obj.size < 64 * 1024 * 1024) {
             blobs.set(u, { kind: 'blob', blob: obj, mime: t });
             trimBlobs();
           }
@@ -2851,7 +2851,7 @@
     var lines = text.split(/\r?\n/);
     var segs = [];
     var key = null, map = null, dur = 0, endlist = false, mediaSeq = 0;
-    var pendingRange = null, lastRangeEnd = 0;
+    var pendingRange = null, lastRangeEnd = 0, gapNext = false;
 
     for (var i = 0; i < lines.length; i++) {
       var l = lines[i].trim();
@@ -2876,6 +2876,8 @@
         mediaSeq = parseInt(l.split(':')[1], 10) || 0;
       } else if (l.indexOf('#EXT-X-ENDLIST') === 0) {
         endlist = true;
+      } else if (l.indexOf('#EXT-X-GAP') === 0) {
+        gapNext = true;   // 占位分片：时长留着占时间轴，但不下载
       } else if (l.charAt(0) !== '#') {
         segs.push({
           url: absolutize2(l, baseUrl),
@@ -2883,9 +2885,11 @@
           key: key,
           start: 0,
           map: map,
+          gap: gapNext,
           range: pendingRange ? (pendingRange.offset + '-' + (pendingRange.offset + pendingRange.length - 1)) : null
         });
         pendingRange = null;
+        gapNext = false;
         dur = 0;
       }
     }
@@ -2932,6 +2936,7 @@
   }
 
   function getCryptoKey(uri) {
+    if (!window.crypto || !crypto.subtle) return Promise.reject(new Error('页面非 HTTPS，解密接口不可用'));
     if (cryptoKeyCache.has(uri)) return cryptoKeyCache.get(uri);
     var p = getKeyBytes(uri).then(function (kb) {
       return crypto.subtle.importKey('raw', kb, 'AES-CBC', false, ['decrypt']);
@@ -2957,6 +2962,26 @@
     return getCryptoKey(key.uri).then(function (ck) {
       return crypto.subtle.decrypt({ name: 'AES-CBC', iv: iv }, ck, data);
     });
+  }
+
+  // 加密流前置检查：把"放不了/下不了"的原因提前说清楚，
+  // 而不是让每个分片各自失败重试，最后只留一句模糊的"解码失败"
+  function checkCryptoSupport(pl) {
+    if (!pl) return '';
+    var keys = [];
+    if (pl.map && pl.map.key) keys.push(pl.map.key);
+    for (var i = 0; i < pl.segs.length; i++) {
+      var k = pl.segs[i] && pl.segs[i].key;
+      if (k && keys.indexOf(k) < 0) keys.push(k);   // KEY 对象按行复用，去重后很少
+    }
+    for (var j = 0; j < keys.length; j++) {
+      var m = keys[j].method;
+      if (!m || m === 'NONE') continue;
+      if (m !== 'AES-128') return '不支持的加密方式 ' + m + '（仅支持 AES-128）';
+      // crypto.subtle 只在安全上下文（HTTPS / localhost）存在
+      if (!window.crypto || !crypto.subtle) return '加密流需要在 HTTPS 页面播放（内核限制）';
+    }
+    return '';
   }
 
   function appendTo(sb, buf) {
@@ -3048,6 +3073,8 @@
     return getPlaylist(this.url).then(function (c) {
       var r = c.r, pl = c.pl;
       if (!pl.segs.length) throw new Error('播放列表为空');
+      var encErr = checkCryptoSupport(pl);
+      if (encErr) throw new Error(encErr);
       self.segs = pl.segs;
       self.map = pl.map;
       self.mediaSeq = pl.mediaSeq;
@@ -3085,6 +3112,8 @@
     return getPlaylist(v.url, 0).then(function (c) {
       var pl = c.pl;
       if (!pl.segs.length) throw new Error('播放列表为空');
+      var encErr2 = checkCryptoSupport(pl);
+      if (encErr2) throw new Error(encErr2);
       var mime = pickMime(!!pl.map, v.codecs);
       self.transmux = false;
       if (!mime && !pl.map) {
@@ -3116,7 +3145,7 @@
     this._pfAt = now;
     this._pfIdx = i;
     var seg = this.segs[i];
-    if (!seg) return;
+    if (!seg || seg.gap) return;
     var key = cacheKey(seg.url, seg.range);
     if (segCache.has(key)) return;
     try {
@@ -3287,7 +3316,7 @@
     var mapP = this.map ? getBufCached(this.map.uri, this.map.range) : null;
     var muxP = this.transmux ? loadMux() : null;
     var firstP = null;
-    if (!this.transmux && index < this.segs.length) {
+    if (!this.transmux && index < this.segs.length && !this.segs[index].gap) {
       firstP = this.fetchSeg(this.segs[index], index, ctrl.signal);
       firstP.catch(function () {});
     }
@@ -3545,6 +3574,7 @@
       }
 
       var seg = self.segs[i];
+      if (seg.gap) { i++; setTimeout(step, 0); return; }   // 占位分片：不请求，时间轴留着
       var p = (i === index && firstP) ? firstP : self.fetchSeg(seg, i, signal);
       if (i === index) firstP = null;
 
@@ -3649,9 +3679,15 @@
 
   // 直链的尺寸常常拿不到（<video src> 不经过 fetch），先探一次 Content-Length
   function probeSize(url) {
-    return netFetch(url, { method: 'HEAD', credentials: 'same-origin' }).then(function (r) {
-      return parseInt(r.headers.get('content-length') || '0', 10) || 0;
-    }).catch(function () { return 0; });
+    // 探测只是优化：挂住或被墙都不能卡住下载，8 秒拿不到就按未知大小走
+    var ctrl = new AbortController();
+    var timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 8000);
+    function done(n) { clearTimeout(timer); return n; }
+    return netFetch(url, { method: 'HEAD', credentials: 'same-origin', signal: ctrl.signal })
+      .then(function (r) {
+        return done(parseInt(r.headers.get('content-length') || '0', 10) || 0);
+      })
+      .catch(function () { return done(0); });
   }
 
   function downloadItem(it) {
@@ -3859,11 +3895,14 @@
     getPlaylist(it.url).then(function (c) {
       pl = c.pl;
       if (!pl.segs.length) throw new Error('播放列表为空');
+      var encErr = checkCryptoSupport(pl);
+      if (encErr) throw new Error(encErr);
 
       if (pl.map) {
         tasks.push({ url: pl.map.uri, range: pl.map.range, key: pl.map.key || null, seq: 0, isMap: true });
       }
       for (var i = 0; i < pl.segs.length; i++) {
+        if (pl.segs[i].gap) continue;   // 占位分片不下载（seq 仍按原始序号算）
         tasks.push({
           url: pl.segs[i].url,
           range: pl.segs[i].range,
@@ -3900,6 +3939,8 @@
 
       // fMP4 分片本身就能直接拼成 mp4
       if (pl.map) {
+        // init 段没下下来：没有它拼出的 mp4 任何播放器都打不开，直接报错别产出废文件
+        if (!results[0]) throw new Error('init 段下载失败，无法合并 MP4');
         saveBlob(new Blob(parts, { type: 'video/mp4' }), name + '.mp4');
         pg.close();
         toast('已合并保存为 MP4（' + THREADS + ' 线程' + tail + '）');
@@ -4051,12 +4092,16 @@
     window.addEventListener('message', function (e) {
       var d = e.data;
       if (!d || d.__xbvk !== 1) return;
+      // 只认自己直接子框架发来的（parent 属性跨源也可读）：别的窗口不能往列表里塞东西
+      var fromChild = false;
+      try { fromChild = !!(e.source && e.source !== window && e.source.parent === window); } catch (err) {}
+      if (!fromChild) return;
       if (d.blob) {
         try {
           var u = URL.createObjectURL(d.blob);
           blobs.set(u, { kind: 'blob', blob: d.blob, mime: d.mime || '' });
           // 子框架可能一直上报，这里也要有上限，否则 Blob 会把内存吃掉
-          while (blobs.size > 6) {
+          while (blobs.size > 3) {
             var oldU = blobs.keys().next().value;
             blobs.delete(oldU);
             try { URL.revokeObjectURL(oldU); } catch (e2) {}
