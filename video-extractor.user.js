@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         视频提取器 · 万能播放/下载
 // @namespace    local.xbrowser.videokit
-// @version      2.9.2
-// @description  自动嗅探网页视频（直链 / m3u8 / MSE 流），自带播放器（倍速、清晰度切换、全片拖动），多线程下载并合并为 mp4。
+// @version      3.0.0
+// @description  自动嗅探网页视频（直链 / m3u8 / MSE 流），自带播放器（倍速、清晰度切换、全片拖动）与站内下载管理（不跳系统下载器，可打开/分享/导出），多线程下载并合并为 mp4。
 // @author       me
 // @match        *://*/*
 // @match        file:///*
@@ -31,7 +31,7 @@
   try { IS_TOP = (window.top === window.self); } catch (e) { IS_TOP = false; }
 
   var MAX_ITEMS = 40;
-  var VERSION = '2.9.2';
+  var VERSION = '3.0.0';
 
   // ---- 设置 ----
   var CFG_KEY = 'xbvk.cfg';
@@ -102,12 +102,15 @@
   var fabEl = null;
   var sheetEl = null;
   var listEl = null;
+  var dlistEl = null;
   var setEl = null;
   var settingsOpen = false;
   var playerEl = null;
   var videoEl = null;
   var toastEl = null;
   var progressEl = null;
+  var tvEl = null;        // txt 查看器
+  var ivEl = null;        // 图片查看器
   var menuOpen = false;
   var hls = null;
   var current = null;
@@ -675,6 +678,56 @@
     '.it{background:rgba(255,255,255,.045);border:0;border-radius:12px;margin-bottom:8px;padding:11px 12px;',
     'transition:background .15s}',
     '.it:active{background:rgba(255,255,255,.09)}',
+    // 面板页签：视频 / 下载
+    '.tabs{display:flex;gap:6px;padding:10px 16px 0}',
+    '.tabs button{flex:1;height:34px;border-radius:9px;border:0;background:transparent;color:#8b93a1;',
+    'font-size:13px;font-weight:600;transition:background .15s,color .15s}',
+    '.tabs button.on{background:rgba(251,114,153,.14);color:#ff9dbb}',
+    '.tabs button .dnum{display:none;font:600 10px/1 -apple-system,sans-serif;background:linear-gradient(135deg,#ff8cab,#fb7299);',
+    'color:#fff;border-radius:8px;padding:2px 6px;margin-left:6px;vertical-align:1px}',
+    '.tabs button .dnum.on{display:inline-block}',
+    '.sheet.dltab .list,.sheet.dltab .hint{display:none}',
+    '.sheet:not(.dltab) .dlist{display:none}',
+    '.sheet.dltab .hd [data-a="rescan"]{display:none}',
+    // 下载列表
+    '.dlist{overflow-y:auto;-webkit-overflow-scrolling:touch;padding:4px 12px 10px}',
+    '.dluse{display:flex;align-items:center;gap:8px;padding:2px 4px 10px;font-size:11px;color:#6f7683}',
+    '.dluse b{font-weight:500;color:#8b93a1}',
+    '.dluse .sp{flex:1}',
+    '.dluse button{background:rgba(255,255,255,.07);border:0;color:#c4cbd6;border-radius:7px;',
+    'padding:4px 10px;font-size:11px;transition:transform .12s,background .15s}',
+    '.dluse button:active{transform:scale(.95);background:rgba(255,255,255,.15)}',
+    '.dlrun{display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:10px 12px;border-radius:12px;',
+    'background:rgba(251,114,153,.1);color:#ff9dbb;font-size:12px}',
+    '.dit{background:rgba(255,255,255,.045);border-radius:12px;margin-bottom:8px;padding:11px 12px;transition:background .15s}',
+    '.dit:active{background:rgba(255,255,255,.09)}',
+    '.dit .r1{display:flex;align-items:center;gap:10px}',
+    '.dit .ic{flex:none;width:36px;height:36px;border-radius:10px;background:rgba(79,140,255,.14);',
+    'display:flex;align-items:center;justify-content:center}',
+    '.dit .ic.txt{background:rgba(56,205,150,.14)}',
+    '.dit .ic.img{background:rgba(255,171,64,.16)}',
+    '.dit .nm{flex:1;min-width:0}',
+    '.dit .nm b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;',
+    'font-weight:500;color:#e9ebef}',
+    '.dit .nm i{font-style:normal;font-size:10.5px;color:#79808d;margin-top:2px;display:block}',
+    '.dit .acts{display:flex;gap:8px;margin-top:10px}',
+    '.dit .acts button{flex:1;height:32px;border-radius:8px;border:1px solid rgba(255,255,255,.1);',
+    'background:rgba(255,255,255,.06);color:#dde2ea;font-size:12px;font-weight:500;transition:transform .12s,background .15s}',
+    '.dit .acts button:active{transform:scale(.96);background:rgba(255,255,255,.14)}',
+    '.dit .acts button.pri{background:linear-gradient(135deg,#ff8cab,#fb7299);border:0;color:#fff}',
+    // 文件查看器（txt / 图片）
+    '.vw{position:fixed;inset:0;background:#101216;color:#e9ebef;z-index:6;display:none;flex-direction:column;pointer-events:auto}',
+    '.vw.open{display:flex;animation:xbplfade .18s ease-out}',
+    '.vw .vhd{display:flex;align-items:center;gap:10px;padding:calc(10px + env(safe-area-inset-top)) 12px 10px;',
+    'border-bottom:1px solid rgba(255,255,255,.07);flex:none}',
+    '.vw .vhd .vt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:500}',
+    '.vw .vhd button{height:32px;min-width:32px;padding:0 10px;border-radius:9px;border:0;',
+    'background:rgba(255,255,255,.08);color:#cfd5de;font-size:12.5px;display:flex;align-items:center;justify-content:center}',
+    '.vw .vhd button:active{background:rgba(255,255,255,.16)}',
+    '.vw pre.vbody{flex:1;overflow:auto;-webkit-overflow-scrolling:touch;margin:0;padding:14px 16px;',
+    'color:#d6dae2;font:13px/1.75 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word}',
+    '.vw .vimgw{flex:1;overflow:auto;-webkit-overflow-scrolling:touch;display:flex;align-items:center;justify-content:center;padding:12px}',
+    '.vw .vimgw img{max-width:100%;max-height:100%;object-fit:contain;border-radius:8px}',
     '.r1{display:flex;align-items:center;gap:7px;margin-bottom:3px}',
     '.badge{font:600 10px/1 -apple-system,sans-serif;padding:4px 6px;border-radius:5px;background:rgba(79,140,255,.18);',
     'color:#7fa9ff;letter-spacing:.3px;flex:none}',
@@ -967,10 +1020,28 @@
     sheetEl.innerHTML =
       '<div class="hd"><h3>视频提取</h3><span class="cnt"></span>' +
       '<button data-a="set">设置</button><button data-a="rescan">重扫</button><button data-a="close">收起</button></div>' +
-      '<div class="hint">点「播放」用内置播放器 · 点「下载」存到手机</div>' +
+      '<div class="tabs"><button data-a="tab" data-v="video" class="on">视频</button>' +
+      '<button data-a="tab" data-v="dl">下载<b class="dnum"></b></button></div>' +
+      '<div class="hint">点「播放」用内置播放器 · 点「下载」存入下载管理</div>' +
       '<div class="list"></div>' +
+      '<div class="dlist"></div>' +
       '<div class="ft"><button data-a="rec">录制当前画面</button><i class="ver">v' + VERSION + '</i></div>';
     root.appendChild(sheetEl);
+
+    // 文件查看器（txt / 图片）
+    tvEl = document.createElement('div');
+    tvEl.className = 'vw';
+    tvEl.innerHTML =
+      '<div class="vhd"><button data-a="vback">' + ICON.back + '</button><span class="vt"></span>' +
+      '<button data-a="vshare">分享</button></div><pre class="vbody"></pre>';
+    root.appendChild(tvEl);
+
+    ivEl = document.createElement('div');
+    ivEl.className = 'vw';
+    ivEl.innerHTML =
+      '<div class="vhd"><button data-a="vback">' + ICON.back + '</button><span class="vt"></span>' +
+      '<button data-a="vshare">分享</button></div><div class="vimgw"><img alt=""></div>';
+    root.appendChild(ivEl);
 
     // 设置面板
     setEl = document.createElement('div');
@@ -996,6 +1067,7 @@
       '</div>';
     root.appendChild(setEl);
     listEl = sheetEl.querySelector('.list');
+    dlistEl = sheetEl.querySelector('.dlist');
 
     // 播放器
     playerEl = document.createElement('div');
@@ -1064,6 +1136,7 @@
 
   // ---- 播放进度记忆：同一个地址下次打开接着看 ----
   function posKey(it) {
+    if (it && it.pkey) return it.pkey;      // 下载管理里的文件：blob URL 每次都变，用固定 id
     var u = (it && it.url) || '';
     return 'xbvk.p:' + u.slice(0, 400);
   }
@@ -1563,12 +1636,22 @@
     sheetEl.addEventListener('click', function (e) {
       if (Date.now() < uiGuardUntil) return;
       var t = e.target;
-      if (!t || t.tagName !== 'BUTTON') return;
+      while (t && t !== sheetEl && t.tagName !== 'BUTTON') t = t.parentNode;
+      if (!t || t === sheetEl) return;
       var a = t.getAttribute('data-a');
       if (a === 'close') return closeSheet();
       if (a === 'set') return openSettings();
       if (a === 'rescan') { scanDom(); scanPerf(); toast('已重新扫描'); return; }
       if (a === 'rec') return startRecord();
+      if (a === 'tab') {
+        var isDl = t.getAttribute('data-v') === 'dl';
+        dlTabOpen = isDl;
+        sheetEl.classList.toggle('dltab', isDl);
+        var tbs = sheetEl.querySelectorAll('.tabs button');
+        for (var ti = 0; ti < tbs.length; ti++) tbs[ti].classList.toggle('on', tbs[ti] === t);
+        if (isDl) { dlInit().then(renderDownloads); }
+        return;
+      }
 
       var row = t.closest('.it');
       if (!row) return;
@@ -1582,6 +1665,64 @@
       else if (act === 'dl') downloadItem(it);
       else if (act === 'copy') copyText(it.url);
     });
+
+    // 下载列表：播放 / 查看 / 保存分享 / 删除 / 清空
+    if (dlistEl) {
+      dlistEl.addEventListener('click', function (e) {
+        var t = e.target;
+        while (t && t !== dlistEl && t.tagName !== 'BUTTON') t = t.parentNode;
+        if (!t || t === dlistEl) return;
+        var act = t.getAttribute('data-act');
+
+        if (act === 'clearall') {
+          dlClearAll().then(function () {
+            toast('下载管理已清空');
+            renderDownloads();
+          });
+          return;
+        }
+        var rowEl = t.closest('.dit');
+        if (!rowEl) return;
+        var fid = rowEl.getAttribute('data-id');
+        var f = null;
+        dlMan.files.forEach(function (x) { if (x.id === fid) f = x; });
+        if (!f) return;
+
+        if (act === 'del') {
+          dlRemove(f).then(function () {
+            toast('已删除');
+            renderDownloads();
+          });
+        } else if (act === 'share') {
+          dlGetBlob(f).then(function (b) { shareFile(b, f.name, f.mime); },
+            function () { toast('文件读取失败'); });
+        } else if (act === 'play') {
+          dlGetBlob(f).then(function (b) { playDlFile(f, b); },
+            function (err) { toast((err && err.message) || '文件读取失败'); });
+        } else if (act === 'view') {
+          dlGetBlob(f).then(function (b) {
+            if (dlKindOf(f.name, f.mime) === 'img') viewImage(f, b);
+            else viewText(f, b);
+          }, function (err) { toast((err && err.message) || '文件读取失败'); });
+        }
+      });
+    }
+
+    // 查看器（txt / 图片）
+    function bindViewer(el) {
+      el.addEventListener('click', function (e) {
+        var t = e.target;
+        while (t && t !== el && t.tagName !== 'BUTTON') t = t.parentNode;
+        if (!t || t === el) return;
+        var a = t.getAttribute('data-a');
+        if (a === 'vback') closeViewer();
+        else if (a === 'vshare' && viewerFile && viewerBlob) {
+          shareFile(viewerBlob, viewerFile.name, viewerFile.mime);
+        }
+      });
+    }
+    if (tvEl) bindViewer(tvEl);
+    if (ivEl) bindViewer(ivEl);
 
     var pmaskEl = playerEl.querySelector('.pmask');
     if (pmaskEl) {
@@ -2275,6 +2416,7 @@
     uiGuardUntil = Date.now() + 450;   // 吃掉 touchend 之后补发的那次 click
     listFresh = true;                  // 首次打开：卡片交错入场（面板开着时的刷新不重播）
     renderList();
+    renderDownloads();                 // 下载页签角标/列表（含初始化后的清单）
     sheetEl.classList.add('open');
     ui.mask.classList.add('on');
     ensureFab();
@@ -2442,6 +2584,200 @@
 
     row.appendChild(acts);
     return row;
+  }
+
+  /* ---------------- 下载管理页签 ---------------- */
+  var dlTabOpen = false;
+
+  function dlKindOf(name, mime) {
+    var m = ((/\.([a-z0-9]{1,5})$/i.exec(name || '') || [])[1] || '').toLowerCase();
+    if (['mp4', 'm4v', 'webm', 'mov', 'ts', 'mkv', 'flv', 'mpg', 'mpeg', '3gp', 'avi'].indexOf(m) >= 0) return 'video';
+    if (['txt', 'log', 'md', 'srt', 'ass', 'vtt', 'json', 'xml', 'html', 'htm', 'csv', 'nfo'].indexOf(m) >= 0 || /^text\//i.test(mime || '')) return 'txt';
+    if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'].indexOf(m) >= 0 || /^image\//i.test(mime || '')) return 'img';
+    return 'file';
+  }
+
+  function dlPlayable(name) {
+    var m = ((/\.([a-z0-9]{1,5})$/i.exec(name || '') || [])[1] || '').toLowerCase();
+    return ['mp4', 'm4v', 'webm', 'mov', 'ts'].indexOf(m) >= 0;
+  }
+
+  var DL_ICONS = {
+    video: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#7fa9ff" stroke-width="1.8"><rect x="2.6" y="4.6" width="18.8" height="14.8" rx="3.2"/><path d="M10.2 9.3l5 2.7-5 2.7z" fill="#7fa9ff" stroke="none"/></svg>',
+    txt: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#3ecd96" stroke-width="1.8"><path d="M6 2.8h8l4 4v14.4H6z"/><path d="M14 2.8v4h4M9 12h6M9 15.5h6"/></svg>',
+    img: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#ffb545" stroke-width="1.8"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><circle cx="8.6" cy="10" r="1.6"/><path d="M4.5 17.5l5-5 3.4 3.4 3-2.6 4.5 4.2"/></svg>',
+    file: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#8b93a1" stroke-width="1.8"><path d="M6 2.8h8l4 4v14.4H6z"/><path d="M14 2.8v4h4"/></svg>'
+  };
+
+  function fmtDate(ts) {
+    var d = new Date(ts);
+    function p(x) { return (x < 10 ? '0' : '') + x; }
+    return (d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  function dlManBytes() {
+    var s = 0;
+    dlMan.files.forEach(function (f) { s += f.size || 0; });
+    return s;
+  }
+
+  function renderDownloads() {
+    if (!dlistEl) return;
+    var n = dlMan.files.length;
+    var dnum = sheetEl.querySelector('.dnum');
+    if (dnum) {
+      dnum.textContent = n > 99 ? '99+' : String(n);
+      dnum.classList.toggle('on', n > 0);
+    }
+    if (!dlTabOpen) return;
+
+    dlistEl.innerHTML = '';
+
+    // 占用 + 清空（estimate 异步补充真实配额）
+    var use = document.createElement('div');
+    use.className = 'dluse';
+    use.innerHTML = '<b>' + (dlDir ? '本站已用 ' + fmtBytes(dlManBytes()) : '内存暂存，退出页面即失效') +
+      '</b><span class="sp"></span>' + (n ? '<button data-act="clearall">清空</button>' : '');
+    dlistEl.appendChild(use);
+    if (dlDir && navigator.storage && navigator.storage.estimate) {
+      navigator.storage.estimate().then(function (es) {
+        var b = use.querySelector('b');
+        if (b && es) b.textContent = '本站已用 ' + fmtBytes(es.usage || 0) + (es.quota ? ' / 配额约 ' + fmtBytes(es.quota) : '');
+      }).catch(function () {});
+    }
+
+    if (dlActive > 0) {
+      var run = document.createElement('div');
+      run.className = 'dlrun';
+      run.innerHTML = '<b>⬇</b>有下载任务进行中，进度见悬浮进度卡';
+      dlistEl.appendChild(run);
+    }
+
+    if (!n) {
+      var d = document.createElement('div');
+      d.className = 'empty';
+      d.innerHTML = '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#565e6b" stroke-width="1.5">' +
+        '<path d="M12 3v12m0 0l-4-4m4 4l4-4"/><path d="M4 17v2.6A1.4 1.4 0 0 0 5.4 21h13.2a1.4 1.4 0 0 0 1.4-1.4V17"/></svg>' +
+        '<b>还没有下载的文件</b><br>在「视频」页签点下载，存完在这里打开 / 导出';
+      dlistEl.appendChild(d);
+      return;
+    }
+
+    for (var i = 0; i < n; i++) dlistEl.appendChild(dlRow(dlMan.files[i]));
+  }
+
+  function dlRow(f) {
+    var kind = dlKindOf(f.name, f.mime);
+    var row = document.createElement('div');
+    row.className = 'dit';
+    row.setAttribute('data-id', f.id);
+
+    var r1 = document.createElement('div');
+    r1.className = 'r1';
+    var ic = document.createElement('div');
+    ic.className = 'ic' + (kind === 'txt' ? ' txt' : kind === 'img' ? ' img' : '');
+    ic.innerHTML = DL_ICONS[kind] || DL_ICONS.file;
+    var nm = document.createElement('div');
+    nm.className = 'nm';
+    var nb = document.createElement('b');
+    nb.textContent = f.name;
+    var ni = document.createElement('i');
+    ni.textContent = fmtBytes(f.size) + ' · ' + fmtDate(f.ts);
+    nm.appendChild(nb);
+    nm.appendChild(ni);
+    r1.appendChild(ic);
+    r1.appendChild(nm);
+    row.appendChild(r1);
+
+    var acts = document.createElement('div');
+    acts.className = 'acts';
+    function btn(act, label, pri) {
+      var b = document.createElement('button');
+      b.setAttribute('data-act', act);
+      b.textContent = label;
+      if (pri) b.className = 'pri';
+      acts.appendChild(b);
+    }
+    if (kind === 'video' && dlPlayable(f.name)) btn('play', '播放', true);
+    else if (kind === 'txt' || kind === 'img') btn('view', '查看', true);
+    btn('share', '保存 / 分享');
+    btn('del', '删除');
+    row.appendChild(acts);
+    return row;
+  }
+
+  /* ---------------- 下载文件打开：内置播放器 / txt / 图片 ---------------- */
+  var dlObjUrls = [];
+  var viewerFile = null, viewerBlob = null;
+
+  function playDlFile(f, blob) {
+    var ext = ((/\.[a-z0-9]{1,5}$/i.exec(f.name) || [''])[0]).toLowerCase();
+    if (ext === '.ts') {
+      openPlayer(f.name, null);
+      playTsBuffer(blob);
+      return;
+    }
+    var objUrl = URL.createObjectURL(blob);
+    dlObjUrls.push(objUrl);
+    playItem({
+      id: 'dl' + f.id,
+      url: objUrl,
+      kind: ext === '.webm' ? 'webm' : 'mp4',
+      title: f.name,
+      size: f.size,
+      score: 100,
+      pkey: 'xbvk.p:dl:' + f.id   // blob URL 每次都不同，进度记忆挂固定 id
+    });
+  }
+
+  function viewText(f, blob) {
+    buildUI();
+    if (!tvEl) return;
+    viewerFile = f; viewerBlob = blob;
+    tvEl.querySelector('.vt').textContent = f.name;
+    var pre = tvEl.querySelector('.vbody');
+    pre.textContent = '读取中…';
+    tvEl.classList.add('open');
+    if (!blob.arrayBuffer) { pre.textContent = '内核不支持读取文本'; return; }
+    blob.arrayBuffer().then(function (ab) {
+      function tryDec(label) {
+        try { return new TextDecoder(label, { fatal: true }); } catch (e) { return null; }
+      }
+      var text = null;
+      var d1 = tryDec('utf-8');
+      if (d1) { try { text = d1.decode(ab); } catch (e) {} }
+      if (text == null) {
+        var d2 = tryDec('gb18030');
+        if (d2) { try { text = d2.decode(ab); } catch (e) {} }
+      }
+      if (text == null) text = new TextDecoder().decode(ab);
+      pre.textContent = text.length > 2 * 1024 * 1024 ? text.slice(0, 2 * 1024 * 1024) + '\n…（太大，仅显示前 2MB）' : text;
+    }).catch(function () { pre.textContent = '读取失败'; });
+  }
+
+  function viewImage(f, blob) {
+    buildUI();
+    if (!ivEl) return;
+    viewerFile = f; viewerBlob = blob;
+    ivEl.querySelector('.vt').textContent = f.name;
+    var img = ivEl.querySelector('img');
+    var old = img.getAttribute('src');
+    if (old) { try { URL.revokeObjectURL(old); } catch (e) {} }
+    img.src = URL.createObjectURL(blob);
+    ivEl.classList.add('open');
+  }
+
+  function closeViewer() {
+    if (tvEl) tvEl.classList.remove('open');
+    if (ivEl) {
+      var img = ivEl.querySelector('img');
+      var old = img && img.getAttribute('src');
+      if (old) { try { URL.revokeObjectURL(old); } catch (e) {} }
+      if (img) img.removeAttribute('src');
+      ivEl.classList.remove('open');
+    }
+    viewerFile = null;
+    viewerBlob = null;
   }
 
   var toastTimer = null;
@@ -2639,6 +2975,9 @@
       window.removeEventListener('resize', syncEmbed);
     } catch (e) {}
     restoreSiteVideo();
+    // 下载文件 / TS 临时 objectURL 释放
+    for (var ri = 0; ri < dlObjUrls.length; ri++) { try { URL.revokeObjectURL(dlObjUrls[ri]); } catch (e) {} }
+    dlObjUrls.length = 0;
     playerOpen = false;
     current = null;
     ensureFab();
@@ -2840,21 +3179,29 @@
 
   // 单个 TS 文件也能塞进 MSE 播放
   function playTs(url) {
+    fetchBuf(url).then(function (buf) {
+      playTsBuffer(buf);
+    }, function () {
+      toast('TS 加载失败，可先下载');
+    });
+  }
+
+  // TS 直接吃 Blob（下载管理里打开 / 在线 TS 共用）
+  function playTsBuffer(buf) {
     var mime = pickMime(false);
     if (!mime) { toast('内核不支持 TS 播放，请先下载'); return; }
     var ms = new MediaSource();
     var objUrl = URL.createObjectURL(ms);
+    dlObjUrls.push(objUrl);
     videoEl.src = objUrl;
     ms.addEventListener('sourceopen', function () {
       var sb;
       try { sb = ms.addSourceBuffer(mime); } catch (e) { toast('TS 播放失败'); return; }
-      fetchBuf(url).then(function (buf) {
-        return appendTo(sb, buf);
-      }).then(function () {
+      appendTo(sb, buf).then(function () {
         try { ms.endOfStream(); } catch (e) {}
         safePlay(videoEl);
       }).catch(function () {
-        toast('TS 加载失败，可先下载');
+        toast('TS 播放失败');
       });
     }, { once: true });
   }
@@ -3860,7 +4207,179 @@
    *  下载
    * ------------------------------------------------------------------ */
 
-  function saveBlob(blob, name) {
+  /* ------------------------------------------------------------------ *
+   *  下载管理存储（OPFS，按站点隔离）
+   *  网页脚本只能用本源存储：A 站下的文件只在 A 站可见。
+   *  OPFS 不可用的老内核退化为内存暂存（提示用户及时导出）。
+   * ------------------------------------------------------------------ */
+  var dlMem = new Map();          // 内存兜底：id -> Blob
+  var dlDir = null;               // OPFS 目录句柄
+  var dlMan = { files: [] };      // [{id,name,mime,size,ts,page}]
+  var dlReady = null;
+  var dlMemWarned = false;
+  var dlActive = 0;               // 进行中的下载数（面板里提示用）
+
+  function dlInit() {
+    if (dlReady) return dlReady;
+    dlReady = Promise.resolve().then(function () {
+      if (!navigator.storage || !navigator.storage.getDirectory) return null;
+      return navigator.storage.getDirectory();
+    }).then(function (root) {
+      if (!root) return null;
+      return root.getDirectoryHandle('__xbvk_dl__', { create: true });
+    }).then(function (dir) {
+      if (!dir) return null;
+      dlDir = dir;
+      // 申请持久化，降低被系统按"可清理站点"回收的概率
+      try { if (navigator.storage.persist) navigator.storage.persist().catch(function () {}); } catch (e) {}
+      return dlDir.getFileHandle('manifest.json').then(function (fh) {
+        return fh.getFile();
+      }).then(function (file) {
+        return file.text();
+      }).then(function (txt) {
+        var man = JSON.parse(txt);
+        if (man && man.files) dlMan = man;
+      }).catch(function () {});
+    }).then(function () {
+      if (!dlDir) return;
+      // 逐个确认文件还在（系统可能清掉），大小以盘上实际为准
+      var checks = dlMan.files.map(function (f) {
+        return dlDir.getFileHandle(f.id + '.bin').then(function (h) { return h.getFile(); }).then(function (file) {
+          f.size = file.size;
+          return f;
+        }).catch(function () { return null; });
+      });
+      return Promise.all(checks).then(function (alive) {
+        dlMan.files = alive.filter(function (f) { return f; });
+      });
+    }).catch(function () {});
+    return dlReady;
+  }
+
+  function dlWarnMem() {
+    if (dlMemWarned) return;
+    dlMemWarned = true;
+    toast('内核不支持内部存储：文件暂存内存，退出页面就没了，请下完点「保存/分享」导出');
+  }
+
+  function dlFlush() {
+    if (!dlDir) return Promise.resolve();
+    return dlDir.getFileHandle('manifest.json', { create: true }).then(function (h) {
+      return h.createWritable();
+    }).then(function (w) {
+      return w.write(new Blob([JSON.stringify(dlMan)], { type: 'application/json' })).then(function () {
+        return w.close();
+      });
+    }).catch(function () {});
+  }
+
+  function dlUniqueName(name) {
+    var has = {};
+    dlMan.files.forEach(function (f) { has[f.name] = 1; });
+    if (!has[name]) return name;
+    var dot = name.lastIndexOf('.');
+    var base = dot > 0 ? name.slice(0, dot) : name;
+    var ext = dot > 0 ? name.slice(dot) : '';
+    for (var n = 1; ; n++) {
+      var cand = base + ' (' + n + ')' + ext;
+      if (!has[cand]) return cand;
+    }
+  }
+
+  // 开始一个下载任务：OPFS 可用则流式写盘（内存零占用），否则攒在内存里
+  function dlBegin(name, mime) {
+    var id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    var uname = dlUniqueName(name);
+    var mimeUsed = mime || '';
+    var chunks = [];
+    var handle = null;
+    var writer = null;
+
+    var pre = dlDir
+      ? dlDir.getFileHandle(id + '.bin', { create: true }).then(function (h) {
+          handle = h;
+          return h.createWritable();
+        }).then(function (w) { writer = w; })
+      : Promise.resolve();
+
+    return pre.then(function () {
+      if (!writer) dlWarnMem();
+      return {
+        name: uname,
+        setMime: function (m) { if (m) mimeUsed = m; },
+        write: function (buf) {
+          if (writer) return writer.write(buf);
+          chunks.push(buf);
+          return Promise.resolve();
+        },
+        close: function () {
+          if (writer) return writer.close();
+          return Promise.resolve();
+        },
+        // 落账：OPFS 从盘上读回真实大小；内存兜底合成 Blob
+        finish: function () {
+          var fp = writer
+            ? handle.getFile()
+            : Promise.resolve(new Blob(chunks, { type: mimeUsed || 'application/octet-stream' }));
+          return fp.then(function (file) {
+            var entry = {
+              id: id, name: uname,
+              mime: mimeUsed || file.type || '',
+              size: file.size, ts: Date.now(), page: location.host
+            };
+            if (!writer) dlMem.set(id, file);
+            dlMan.files.unshift(entry);
+            return dlFlush().then(function () { return entry; });
+          });
+        },
+        fail: function () {
+          var p = writer
+            ? writer.abort().catch(function () {}).then(function () {
+                return dlDir.removeEntry(id + '.bin').catch(function () {});
+              })
+            : Promise.resolve();
+          return p;
+        }
+      };
+    });
+  }
+
+  // 整块保存（HLS 合并产物 / 录制 / 已有 Blob）
+  function dlPut(blob, name, mime) {
+    return dlInit().then(function () {
+      return dlBegin(name, mime || (blob && blob.type) || '');
+    }).then(function (t) {
+      return t.write(blob).then(function () { return t.close(); }).then(function () { return t.finish(); });
+    });
+  }
+
+  function dlGetBlob(f) {
+    if (dlDir) {
+      return dlDir.getFileHandle(f.id + '.bin').then(function (h) { return h.getFile(); });
+    }
+    var b = dlMem.get(f.id);
+    return b ? Promise.resolve(b) : Promise.reject(new Error('文件不存在（重启后内存暂存会失效）'));
+  }
+
+  function dlRemove(f) {
+    dlMan.files = dlMan.files.filter(function (x) { return x.id !== f.id; });
+    dlMem.delete(f.id);
+    var p = dlDir ? dlDir.removeEntry(f.id + '.bin').catch(function () {}) : Promise.resolve();
+    return p.then(function () { return dlFlush(); });
+  }
+
+  function dlClearAll() {
+    var ids = dlMan.files.slice();
+    dlMan.files = [];
+    dlMem.clear();
+    var p = dlDir
+      ? Promise.all(ids.map(function (f) { return dlDir.removeEntry(f.id + '.bin').catch(function () {}); }))
+      : Promise.resolve();
+    return p.then(function () { return dlFlush(); });
+  }
+
+  // 导出：a[download]（旧路径，X浏览器可能转交系统/别的浏览器）
+  function exportBlob(blob, name) {
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
     a.href = url;
@@ -3872,9 +4391,24 @@
     try { a.click(); ok = true; } catch (e) {}
     setTimeout(function () { try { a.remove(); } catch (e) {} }, 8000);
     setTimeout(function () { try { URL.revokeObjectURL(url); } catch (e) {} }, 600000);
-    // click 抛错说明保存链路被拦了，不能再报"已保存"骗人
-    if (ok) toast('已保存：' + name + '（没反应就长按链接另存）');
-    else toast('保存没成功，请长按视频链接另存');
+    if (ok) toast('已导出：' + name + '（没反应就长按链接另存）');
+    else toast('导出没成功，请长按链接另存');
+  }
+
+  // 存到手机 / 发给其他 App：系统分享面板（网页交出沙盒的唯一正规通道），
+  // 分享面板里既能"保存到设备"也能选任意应用；内核不支持时退回 a[download]
+  function shareFile(blob, name, mime) {
+    var file = null;
+    try { file = new File([blob], name, { type: mime || (blob && blob.type) || 'application/octet-stream' }); } catch (e) {}
+    if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+      var p;
+      try { p = navigator.share({ files: [file], title: name }); } catch (e) { p = Promise.reject(e); }
+      return Promise.resolve(p).then(function () {}, function (err) {
+        if (err && err.name === 'AbortError') return;   // 用户取消面板，不算失败
+        exportBlob(blob, name);
+      });
+    }
+    exportBlob(blob, name);
   }
 
   function anchorDownload(url, name) {
@@ -3889,19 +4423,6 @@
     setTimeout(function () { try { a.remove(); } catch (e) {} }, 8000);
   }
 
-  // 直链的尺寸常常拿不到（<video src> 不经过 fetch），先探一次 Content-Length
-  function probeSize(url) {
-    // 探测只是优化：挂住或被墙都不能卡住下载，4 秒拿不到就按未知大小走
-    var ctrl = new AbortController();
-    var timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 4000);
-    function done(n) { clearTimeout(timer); return n; }
-    return netFetch(url, { method: 'HEAD', credentials: 'same-origin', signal: ctrl.signal })
-      .then(function (r) {
-        return done(parseInt(r.headers.get('content-length') || '0', 10) || 0);
-      })
-      .catch(function () { return done(0); });
-  }
-
   function downloadItem(it) {
     if (!it) return;
     var name = it.title || 'video';
@@ -3909,58 +4430,41 @@
     if (it.kind === 'hls') return downloadHls(it);
     if (it.kind === 'dash') { copyText(it.url); toast('DASH 地址已复制'); return; }
 
-    if (it.blob) { saveBlob(it.blob, name + extOf(it)); return; }
+    if (it.blob) {
+      dlPut(it.blob, name + extOf(it), it.mime).then(function (ent) {
+        toast('已存入下载管理：' + ent.name);
+        renderDownloads();
+      }, function () { toast('保存失败，请重试'); });
+      return;
+    }
 
     var pg = showProgress('准备下载…');
     var ctrl = new AbortController();
     pg.onCancel = function () { try { ctrl.abort(); } catch (e) {} };
+    dlActive++;
 
-    var sizeP;
-    if (it.size) sizeP = Promise.resolve(it.size);
-    else { pg.set('探测文件大小…'); sizeP = probeSize(it.url); }
-    sizeP.then(function (known) {
-      // 直链大文件交给浏览器下载器：内存占用低、能后台续传，通常还是多线程的
-      if (known > 150 * 1024 * 1024) {
-        anchorDownload(it.url, name + extOf(it));
-        toast('大文件（' + fmtBytes(known) + '）已交给浏览器下载');
-        return;
-      }
-
+    dlInit().then(function () {
+      return dlBegin(name + extOf(it));
+    }).then(function (t) {
       return netFetch(it.url, { credentials: 'same-origin', signal: ctrl.signal }).then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         var total = parseInt(r.headers.get('content-length') || '0', 10) || 0;
-        var type = r.headers.get('content-type') || 'video/mp4';
+        var type = r.headers.get('content-type') || '';
+        if (/^(video|audio|image|text)\//i.test(type)) t.setMime(type);
 
         if (!r.body || !r.body.getReader) {
-          return r.blob().then(function (b) { saveBlob(b, name + extOf(it)); });
+          return r.blob().then(function (b) {
+            return t.write(b).then(function () { return t.close(); });
+          });
         }
+        // 边下边流式写盘（OPFS），内存里不再攒 Blob
         var reader = r.body.getReader();
-        var chunks = [];
-        var buckets = [];          // 每满 16MB 就固化成一个 Blob，避免大文件内存翻倍
-        var bucketBytes = 0;
-        var got = 0;
-        var lastPaint = 0;
-        var rate = rateTracker();
-
-        function flushBucket() {
-          if (!chunks.length) return;
-          buckets.push(new Blob(chunks, { type: type }));
-          chunks = [];
-          bucketBytes = 0;
-        }
-
+        var got = 0, lastPaint = 0, rate = rateTracker();
         function loop() {
           return reader.read().then(function (res) {
-            if (res.done) {
-              flushBucket();
-              saveBlob(new Blob(buckets, { type: type }), name + extOf(it));
-              return;
-            }
-            chunks.push(res.value);
+            if (res.done) return t.close();
             got += res.value.length;
-            bucketBytes += res.value.length;
-            if (bucketBytes > 16 * 1024 * 1024) flushBucket();
-
+            var wq = t.write(res.value);
             var now = Date.now();
             if (now - lastPaint > 250) {
               lastPaint = now;
@@ -3973,18 +4477,32 @@
                 pg.sub(fmtRate(bps));
               }
             }
-            return loop();
+            return wq.then(loop);
           });
         }
         return loop();
+      }).then(function () {
+        return t.finish();
+      }).then(function (ent) {
+        dlActive--;
+        pg.close();
+        toast('已存入下载管理：' + ent.name);
+        renderDownloads();
+      }, function (err) {
+        dlActive--;
+        return t.fail().then(function () {
+          pg.close();
+          if (err && err.name === 'AbortError') { toast('已取消下载'); return; }
+          // CORS 或写盘失败：退回普通链接，交给浏览器下载器
+          anchorDownload(it.url, name + extOf(it));
+          toast('直接下载被限制，已转交浏览器下载');
+        });
       });
     }).catch(function (err) {
-      if (err && err.name === 'AbortError') { toast('已取消下载'); return; }
-      // CORS 或流读取失败：退回普通链接，交给浏览器下载器
-      anchorDownload(it.url, name + extOf(it));
-      toast('直接读取被限制，已转交浏览器下载');
-    }).then(function () {
+      // 存储初始化/建文件失败（极少见）：别让进度卡挂着
+      dlActive--;
       pg.close();
+      toast('下载启动失败：' + ((err && err.message) || '存储不可用'));
     });
   }
 
@@ -4087,6 +4605,7 @@
     var pg = showProgress('解析播放列表…');
     var ctrl = new AbortController();
     pg.onCancel = function () { try { ctrl.abort(); } catch (e) {} };
+    dlActive++;
 
     var name = it.title || 'video';
     var tasks = [], results = [], pl = null, doneCount = 0, failed = 0, streak = 0;
@@ -4166,38 +4685,42 @@
       for (var i = 0; i < parts.length; i++) totalBytes += parts[i].size || 0;
       var tail = (failed ? '，' + failed + ' 个分片失败' : '') + (pl.endlist ? '' : '，直播流仅当前片段');
 
+      // 统一走下载管理存储
+      function saveDl(blob, fname, msg) {
+        pg.close();
+        dlPut(blob, fname).then(function (ent) {
+          dlActive--;
+          toast('已存入下载管理：' + ent.name + '（' + msg + '）');
+          renderDownloads();
+        }, function () {
+          dlActive--;
+          toast('写入下载管理失败，请重试');
+        });
+      }
+
       // fMP4 分片本身就能直接拼成 mp4
       if (pl.map) {
         // init 段没下下来：没有它拼出的 mp4 任何播放器都打不开，直接报错别产出废文件
         if (!results[0]) throw new Error('init 段下载失败，无法合并 MP4');
-        saveBlob(new Blob(parts, { type: 'video/mp4' }), name + '.mp4');
-        pg.close();
-        toast('已合并保存为 MP4（' + THREADS + ' 线程' + tail + '）');
-        return;
+        return saveDl(new Blob(parts, { type: 'video/mp4' }), name + '.mp4', THREADS + ' 线程' + tail);
       }
 
       // 太大的文件不做转封装，避免手机内存吃不住
       if (totalBytes > 300 * 1024 * 1024) {
-        saveBlob(new Blob(parts, { type: 'video/mp2t' }), name + '.ts');
-        pg.close();
-        toast('文件较大，已保存为 TS（VLC / MX 可播' + tail + '）');
-        return;
+        return saveDl(new Blob(parts, { type: 'video/mp2t' }), name + '.ts', 'TS，VLC / MX 可播' + tail);
       }
 
       pg.set('正在转封装为 MP4…');
       pg.sub('');
       return remuxToMp4(parts, function (cur, total) { pg.progress(cur, total); }).then(function (blob) {
         if (!blob || blob.size < totalBytes * 0.4) throw new Error('输出异常');
-        saveBlob(blob, name + '.mp4');
-        pg.close();
-        toast('已合并保存为 MP4（' + THREADS + ' 线程' + tail + '）');
+        saveDl(blob, name + '.mp4', THREADS + ' 线程' + tail);
       }).catch(function () {
-        saveBlob(new Blob(parts, { type: 'video/mp2t' }), name + '.ts');
-        pg.close();
-        toast('已保存为 TS（MP4 转封装不可用' + tail + '）');
+        saveDl(new Blob(parts, { type: 'video/mp2t' }), name + '.ts', 'TS，转封装不可用' + tail);
       });
     }).catch(function (err) {
       try { ctrl.abort(); } catch (e) {}
+      dlActive--;
       pg.close();
       if (err && err.name === 'AbortError') { toast('已取消下载'); return; }
       toast('下载失败：' + (err && err.message ? err.message : '未知') + '，可点“复制”用其他工具');
@@ -4236,7 +4759,10 @@
       recorder.ondataavailable = function (e) { if (e.data && e.data.size) recChunks.push(e.data); };
       recorder.onstop = function () {
         var blob = new Blob(recChunks, { type: 'video/webm' });
-        saveBlob(blob, recName);
+        dlPut(blob, recName, 'video/webm').then(function (ent) {
+          toast('录制已存入下载管理：' + ent.name);
+          renderDownloads();
+        }, function () { toast('录制保存失败'); });
         recorder = null;
         var btn = sheetEl && sheetEl.querySelector('[data-a="rec"]');
         if (btn) btn.textContent = '录制当前画面';
@@ -4310,6 +4836,7 @@
 
   function boot() {
     loadCfg();
+    dlInit();   // 预热下载管理存储（读清单、申请持久化），打开面板时零等待
     var _si = SPEEDS.indexOf(Number(cfg.speed));
     if (_si >= 0) speedIdx = _si;
     hookMedia();
