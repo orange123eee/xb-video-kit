@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         链接净化 · 直达
 // @namespace    local.xbrowser.linkcleaner
-// @version      1.0.0
+// @version      1.1.0
 // @description  去掉搜索结果/分享链接的中转跳转，点击直达目标地址；已知中转页（百度 link）自动秒跳，不等倒计时。零界面无感运行。
 // @author       me
 // @match        *://*/*
@@ -38,7 +38,8 @@
     { re: /(^|\.)juejin\.cn$/i,   path: /^\/?$/,        keys: ['target'], explicit: true },   // link.juejin.cn/?target=
     { re: /(^|\.)csdn\.net$/i,    path: /^\/?$/,        keys: ['target'], explicit: true },   // link.csdn.net/?target=
     { re: /(^|\.)oschina\.net$/i, path: /^\/redirect\//i, keys: ['url'], explicit: true },
-    { re: /(^|\.)jianshu\.com$/i, path: /^\/go\//i,    keys: ['url'], explicit: true }
+    { re: /(^|\.)jianshu\.com$/i, path: /^\/go\//i,    keys: ['url'], explicit: true },
+    { re: /(^|\.)mail\.qq\.com$/i, path: /^\/cgi-bin\/(readtemplate|frame_html)/i, keys: ['url', 'target'], explicit: true }  // QQ 邮箱正文外链
   ];
 
   // 通用规则：任意站点，但要求"长得像中转端点"——
@@ -49,7 +50,9 @@
   // 已知"中转页"（点开后是一张带倒计时/广告的网页而不是 302）：
   // 在页面里找到真实目标就立即跳过去
   var INTERSTITIALS = [
-    { re: /(^|\.)baidu\.com$/i, path: /^\/link(\.html)?$/i }   // 百度搜索结果中转页
+    { re: /(^|\.)baidu\.com$/i,  path: /^\/link(\.html)?$/i },   // 百度搜索结果中转页
+    { re: /(^|\.)sogou\.com$/i,  path: /^\/link(\/|$)/i },       // 搜狗搜索结果中转页
+    { re: /(^|\.)so\.com$/i,     path: /^\/link(\/|$)/i }        // 360 搜索结果中转页
   ];
 
   var IS_TOP = true;
@@ -138,17 +141,44 @@
     var as = root.querySelectorAll('a[href]');
     for (var i = 0; i < as.length; i++) {
       var a = as[i];
-      if (a.__xlc) continue;
+      var href0 = a.getAttribute('href');
+      // SPA 会原地复用 <a> 改 href：地址变了就重新查一遍
+      if (a.__xlc && a.__xlcHref === href0) continue;
       a.__xlc = 1;
-      var href = a.getAttribute('href');
-      if (!href || href.charAt(0) === '#' || /^(javascript|mailto|tel):/i.test(href)) continue;
+      a.__xlcHref = href0;
+      if (!href0 || href0.charAt(0) === '#' || /^(javascript|mailto|tel):/i.test(href0)) continue;
       var t = null;
-      try { t = extractTarget(href); } catch (e) {}
+      try { t = extractTarget(href0); } catch (e) {}
       if (t) {
-        try { a.setAttribute('href', t); cleaned++; } catch (e) {}
+        try {
+          a.setAttribute('href', t);
+          a.__xlcHref = t;
+          cleaned++;
+        } catch (e) {}
       }
     }
     if (cleaned > 0) setTimeout(maybeToast, 700);
+  }
+
+  // 点击兜底：批量清理赶不上的时候（插入后立即被点、SPA 改地址），
+  // 在捕获阶段再查一次并把 href 就地修好——不拦默认行为，零干扰
+  function onClickCheck(e) {
+    if (e.defaultPrevented) return;
+    if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    var t = e.target;
+    while (t && t !== document && !(t.tagName === 'A')) t = t.parentNode;
+    if (!t || t === document || !t.getAttribute) return;
+    var href = t.getAttribute('href');
+    if (!href || href.charAt(0) === '#' || /^(javascript|mailto|tel):/i.test(href)) return;
+    var real = null;
+    try { real = extractTarget(href); } catch (err) {}
+    if (real && real !== href) {
+      try {
+        t.setAttribute('href', real);
+        t.__xlc = 1;
+        t.__xlcHref = real;
+      } catch (err) {}
+    }
   }
 
   var moTimer = 0;
@@ -221,6 +251,9 @@
   function start() {
     try { cleanRoot(document.body); } catch (e) {}
     try { interstitialJump(); } catch (e) {}
+    try {
+      document.addEventListener('click', onClickCheck, true);
+    } catch (e) {}
     try {
       var mo = new MutationObserver(function (muts) {
         for (var i = 0; i < muts.length; i++) {
