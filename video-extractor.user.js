@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         视频提取器 · 万能播放/下载
 // @namespace    local.xbrowser.videokit
-// @version      2.8.0
+// @version      2.9.0
 // @description  自动嗅探网页视频（直链 / m3u8 / MSE 流），自带播放器（倍速、清晰度切换、全片拖动），多线程下载并合并为 mp4。
 // @author       me
 // @match        *://*/*
@@ -31,7 +31,7 @@
   try { IS_TOP = (window.top === window.self); } catch (e) { IS_TOP = false; }
 
   var MAX_ITEMS = 40;
-  var VERSION = '2.8.0';
+  var VERSION = '2.9.0';
 
   // ---- 设置 ----
   var CFG_KEY = 'xbvk.cfg';
@@ -633,13 +633,15 @@
     ':host{all:initial}',
     '*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}',
     '.fab{position:fixed;height:42px;padding:0 13px 0 11px;border-radius:21px;display:flex;align-items:center;gap:5px;',
-    'background:rgba(22,24,29,.95);border:1px solid rgba(255,255,255,.18);box-shadow:0 6px 22px rgba(0,0,0,.5);',
+    'background:linear-gradient(160deg,rgba(41,44,52,.97),rgba(20,22,27,.97));border:1px solid rgba(255,255,255,.14);',
+    'box-shadow:0 8px 26px rgba(0,0,0,.55),0 2px 8px rgba(0,0,0,.4);',
     'pointer-events:auto;touch-action:none;z-index:9;transition:opacity .18s,transform .18s}',
     '.fab .lb{font:600 12px/1 -apple-system,"PingFang SC","Noto Sans SC",sans-serif;color:#e9ebef;letter-spacing:.5px}',
     '.fab:active{transform:scale(.94)}',
     '.fab.press{transform:scale(.9);opacity:.85}',
     '.fab .dot{position:absolute;top:3px;right:3px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;',
-    'background:#4f8cff;color:#fff;font:600 10px/16px -apple-system,sans-serif;text-align:center;display:none}',
+    'background:linear-gradient(135deg,#ff8cab,#fb7299);color:#fff;font:600 10px/16px -apple-system,sans-serif;',
+    'text-align:center;display:none;box-shadow:0 2px 8px rgba(251,114,153,.5)}',
     '.fab.has .dot{display:block}',
     '.fab .tip{position:absolute;left:50%;bottom:58px;transform:translateX(-50%);white-space:nowrap;',
     'background:rgba(22,24,29,.96);color:#e9ebef;font:12px/1 -apple-system,sans-serif;padding:8px 10px;',
@@ -648,23 +650,30 @@
     '.fab .tip.b{bottom:auto;top:58px}',
     '.mask{position:fixed;inset:0;background:rgba(0,0,0,.45);opacity:0;pointer-events:none;transition:opacity .2s;z-index:1}',
     '.mask.on{opacity:1;pointer-events:auto}',
-    '.sheet{position:fixed;left:0;right:0;bottom:0;background:#16181d;color:#e9ebef;border-radius:18px 18px 0 0;',
+    '.sheet{position:fixed;left:0;right:0;bottom:0;background:#16181d;color:#e9ebef;border-radius:20px 20px 0 0;',
     'box-shadow:0 -10px 40px rgba(0,0,0,.6);transform:translateY(105%);transition:transform .26s cubic-bezier(.2,.85,.25,1);',
     'pointer-events:auto;z-index:2;max-height:74vh;display:flex;flex-direction:column;',
     'font:14px/1.45 -apple-system,"PingFang SC","Noto Sans SC",sans-serif;padding-bottom:calc(8px + env(safe-area-inset-bottom))}',
+    '.sheet::before{content:"";position:absolute;top:7px;left:50%;transform:translateX(-50%);width:34px;height:4px;',
+    'border-radius:2px;background:rgba(255,255,255,.14)}',
     '.sheet.open{transform:translateY(0)}',
-    '.hd{display:flex;align-items:center;gap:8px;padding:14px 16px 10px;border-bottom:1px solid rgba(255,255,255,.07)}',
-    '.hd h3{margin:0;font-size:15px;font-weight:600;flex:1}',
+    '.hd{display:flex;align-items:center;gap:8px;padding:16px 16px 10px;border-bottom:1px solid rgba(255,255,255,.07)}',
+    '.hd h3{margin:0;font-size:15px;font-weight:650;flex:1;letter-spacing:.3px}',
     '.hd .cnt{font-size:12px;color:#8b93a1}',
-    '.hd button{background:rgba(255,255,255,.08);border:0;color:#cfd5de;border-radius:9px;padding:6px 10px;font-size:12px}',
-    '.hint{padding:0 16px 8px;font-size:11.5px;color:#79808d}',
-    '.list{overflow-y:auto;-webkit-overflow-scrolling:touch;padding:6px 0}',
+    '.hd button{background:rgba(255,255,255,.07);border:0;color:#c4cbd6;border-radius:8px;padding:6px 10px;',
+    'font-size:12px;font-weight:500;transition:background .15s}',
+    '.hd button:active{background:rgba(255,255,255,.16)}',
+    '.hint{padding:2px 18px 8px;font-size:11px;color:#6f7683}',
+    '.list{overflow-y:auto;-webkit-overflow-scrolling:touch;padding:4px 12px 10px}',
     '.empty{padding:24px 20px;color:#8b93a1;font-size:13px;text-align:center;line-height:1.8}',
+    '.empty svg{display:block;margin:0 auto 10px;opacity:.85}',
     '.empty b{color:#cfd5de;font-weight:600}',
     '.empty .mini{margin-top:12px;height:34px;padding:0 18px;border-radius:9px;border:1px solid rgba(255,255,255,.14);',
     'background:rgba(255,255,255,.07);color:#dde2ea;font-size:12.5px}',
-    '.it{padding:11px 16px;border-bottom:1px solid rgba(255,255,255,.055)}',
-    '.it:last-child{border-bottom:0}',
+    // 列表项卡片化：圆角小卡 + 按压反馈，比通栏分隔线更透气
+    '.it{background:rgba(255,255,255,.045);border:0;border-radius:12px;margin-bottom:8px;padding:11px 12px;',
+    'transition:background .15s}',
+    '.it:active{background:rgba(255,255,255,.09)}',
     '.r1{display:flex;align-items:center;gap:7px;margin-bottom:3px}',
     '.badge{font:600 10px/1 -apple-system,sans-serif;padding:4px 6px;border-radius:5px;background:rgba(79,140,255,.18);',
     'color:#7fa9ff;letter-spacing:.3px;flex:none}',
@@ -675,9 +684,11 @@
     '.u{font-size:11px;color:#6d7480;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:8px;direction:rtl;text-align:left}',
     '.acts{display:flex;gap:8px}',
     '.acts button{flex:1;height:34px;border-radius:9px;border:1px solid rgba(255,255,255,.1);',
-    'background:rgba(255,255,255,.06);color:#dde2ea;font-size:12.5px;font-weight:500}',
+    'background:rgba(255,255,255,.06);color:#dde2ea;font-size:12.5px;font-weight:500;transition:background .15s}',
     '.acts button:active{background:rgba(255,255,255,.14)}',
-    '.acts button.pri{background:#2f6fd0;border-color:#2f6fd0;color:#fff}',
+    '.acts button.pri{background:linear-gradient(135deg,#ff8cab,#fb7299);border:0;color:#fff;',
+    'box-shadow:0 3px 12px rgba(251,114,153,.32)}',
+    '.acts button.pri:active{filter:brightness(1.12)}',
     '.ft{padding:10px 16px 4px;display:flex;gap:8px;align-items:center}',
     '.ft .ver{font-style:normal;font-size:10px;color:#5d6470;flex:none}',
     '.ft button{flex:1;height:38px;border-radius:10px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);',
@@ -688,9 +699,11 @@
     '.pl .top{display:flex;align-items:center;gap:10px;padding:calc(8px + env(safe-area-inset-top)) 12px 10px;',
     'background:linear-gradient(rgba(0,0,0,.74),rgba(0,0,0,0));position:absolute;left:0;right:0;top:0;z-index:4;transition:opacity .25s}',
     '.pl .top button{height:34px;min-width:34px;width:34px;padding:0;border-radius:50%;border:0;background:rgba(0,0,0,.3);',
-    'color:#fff;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px)}',
+    'color:#fff;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px);',
+    'box-shadow:0 1px 6px rgba(0,0,0,.35)}',
     '.pl .top button:active{background:rgba(255,255,255,.2)}',
-    '.pl .t{flex:1;color:#fff;font-size:13.5px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.95;letter-spacing:.1px}',
+    '.pl .t{flex:1;color:#fff;font-size:13.5px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
+    'opacity:.95;letter-spacing:.1px;text-shadow:0 1px 6px rgba(0,0,0,.65)}',
     '.pl .stage{position:absolute;inset:0;display:flex;background:#000}',
     '.pl .dim{position:absolute;inset:0;background:#000;opacity:0;pointer-events:none;z-index:2}',
     // 加载中：画面先透出网页原来的样子（海报/首帧），别一上来就是黑屏
@@ -748,6 +761,9 @@
     '.pl .seek .knob{position:absolute;left:0;width:12px;height:12px;border-radius:50%;background:#fff;',
     'margin-left:-6px;border:2px solid #fb7299;box-shadow:0 2px 8px rgba(0,0,0,.45);transition:transform .12s}',
     '.pl .seek.on .knob{transform:scale(1.28)}',
+    // 拖动进度条时轨道变粗一点（B站/YouTube 同款手感），松手弹回
+    '.pl .seek .track,.pl .seek .buf,.pl .seek .bar{transition:height .16s}',
+    '.pl .seek.on .track,.pl .seek.on .buf,.pl .seek.on .bar{height:5px}',
     '.pl .seek .tip{position:absolute;bottom:30px;left:0;transform:translateX(-50%);background:rgba(20,21,25,.94);',
     'color:#fff;font:600 11px/1 -apple-system,"PingFang SC",sans-serif;padding:6px 8px;border-radius:7px;',
     'white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .12s;z-index:5;font-variant-numeric:tabular-nums;',
@@ -755,8 +771,8 @@
     '.pl .seek.on .tip{opacity:1}',
     '.pl .ctlrow{display:flex;align-items:center;gap:6px;height:38px}',
     '.pl .ctlrow button{height:30px;padding:0 9px;border-radius:8px;border:0;background:rgba(255,255,255,.09);',
-    'color:#f1f3f6;font-size:12px;font-weight:500;flex:none}',
-    '.pl .ctlrow button:active{background:rgba(255,255,255,.2)}',
+    'color:#f1f3f6;font-size:12px;font-weight:500;flex:none;transition:background .15s,transform .12s}',
+    '.pl .ctlrow button:active{background:rgba(255,255,255,.2);transform:scale(.94)}',
     '.pl .ctlrow button.ico{width:34px;padding:0;background:transparent;display:flex;align-items:center;justify-content:center}',
     '.pl .ctlrow button.ico:active{background:rgba(255,255,255,.12)}',
     '.pl .ctlrow button.on{background:rgba(251,114,153,.18);color:#ff9dbb}',
@@ -775,6 +791,22 @@
     // 嵌入的小框放不下三个按钮，画中画留给全屏用
     '.pl.embed .side [data-a="pip"]{display:none}',
     '.pl.hideui .side{opacity:0;pointer-events:none}',
+    // 小窗预览（mini）：网页里的小播放框，全套控件会把画面盖死。
+    // 只留两个小圆钮（关闭/全屏）+ 一条 2.5px 进度线，点画面唤出、快速自动隐藏
+    '.pl .top .mfull{display:none}',
+    '.pl.mini .t{display:none}',
+    '.pl.mini .top{background:none;justify-content:space-between;padding:5px 6px;gap:0}',
+    '.pl.mini .top button{width:28px;height:28px;min-width:28px;background:rgba(0,0,0,.42)}',
+    '.pl.mini .top .mfull{display:flex}',
+    '.pl.mini .side,.pl.mini .ctl{display:none}',
+    '.pl .mtrack{display:none;position:absolute;left:0;right:0;bottom:0;height:2.5px;background:rgba(255,255,255,.2);z-index:4}',
+    '.pl .mtrack b{display:block;height:100%;width:0;background:#fb7299;border-radius:0 2px 2px 0}',
+    '.pl.mini .mtrack{display:block}',
+    '.pl.mini .bigplay{width:44px;height:44px;margin:-22px 0 0 -22px}',
+    '.pl.mini .bigplay svg{width:21px;height:21px}',
+    '.pl.mini .spin{width:24px;height:24px;margin:-12px 0 0 -12px;border-width:2.5px}',
+    '.pl.mini .seekpreview{padding:7px 11px;gap:6px}',
+    '.pl.mini .seekpreview b{font-size:14px}',
     '.pl .ctlrow .tm{font-size:11.5px;color:rgba(255,255,255,.78);font-variant-numeric:tabular-nums;flex:none;white-space:nowrap}',
     '.pl .ctlrow .stat{font-size:10px;color:rgba(255,255,255,.42);flex:none;max-width:96px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '.pl.embed .ctlrow .stat{display:none}',
@@ -799,18 +831,20 @@
     '.pl .pmenu.grid .pmbody{display:grid;grid-template-columns:repeat(4,minmax(48px,1fr));gap:4px}',
     '.pl .pmenu.grid button{justify-content:center;height:30px;padding:0 4px;font-size:12px}',
     '.pl .pmenu.grid button.on::after{content:""}',
-    '.toast{position:fixed;left:50%;bottom:130px;transform:translate(-50%,10px);background:rgba(24,26,31,.96);color:#e9ebef;',
-    'padding:10px 14px;border-radius:10px;font:13px/1.4 -apple-system,sans-serif;max-width:80vw;text-align:center;',
-    'opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:20;box-shadow:0 6px 24px rgba(0,0,0,.5)}',
+    '.toast{position:fixed;left:50%;bottom:130px;transform:translate(-50%,10px);background:rgba(17,19,23,.88);color:#e9ebef;',
+    'padding:10px 14px;border-radius:11px;font:13px/1.4 -apple-system,sans-serif;max-width:80vw;text-align:center;',
+    'border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(14px);',
+    'opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:20;box-shadow:0 10px 34px rgba(0,0,0,.55)}',
     '.toast.on{opacity:1;transform:translate(-50%,0)}',
-    '.pg{position:fixed;left:16px;right:16px;bottom:150px;background:rgba(24,26,31,.97);border-radius:12px;padding:12px 14px;',
-    'z-index:21;color:#e9ebef;font:12.5px/1.4 -apple-system,sans-serif;display:none;box-shadow:0 8px 28px rgba(0,0,0,.55)}',
+    '.pg{position:fixed;left:16px;right:16px;bottom:150px;background:rgba(20,22,27,.9);border-radius:13px;padding:12px 14px;',
+    'z-index:21;color:#e9ebef;font:12.5px/1.4 -apple-system,sans-serif;display:none;',
+    'border:1px solid rgba(255,255,255,.07);backdrop-filter:blur(14px);box-shadow:0 8px 28px rgba(0,0,0,.55)}',
     '.pg.on{display:block}',
     '.pg .row{display:flex;align-items:center;gap:10px;margin-bottom:8px}',
     '.pg .row span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '.pg .row button{background:rgba(255,255,255,.1);border:0;color:#cfd5de;border-radius:7px;padding:4px 9px;font-size:11.5px}',
     '.pg .track{height:4px;border-radius:2px;background:rgba(255,255,255,.12);overflow:hidden}',
-    '.pg .fill{height:100%;width:0;background:#4f8cff;transition:width .18s}',
+    '.pg .fill{height:100%;width:0;background:linear-gradient(90deg,#ff8cab,#fb7299);transition:width .18s}',
     '.pg .sub{font-size:11px;color:#8b93a1;margin-bottom:8px}',
     '.pg .sub:empty{display:none}',
     // 设置面板
@@ -829,12 +863,15 @@
     '.srow.col>span{color:#aeb6c2;font-size:12.5px}',
     '.sw{width:44px;height:26px;border-radius:13px;background:rgba(255,255,255,.16);position:relative;flex:none;transition:background .2s}',
     '.sw::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;transition:left .2s}',
-    '.sw.on{background:#3ea6ff}',
+    '.sw.on{background:#fb7299}',
     '.sw.on::after{left:21px}',
     '.seg{display:flex;gap:8px}',
     '.seg button{flex:1;height:36px;border-radius:9px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);',
-    'color:#cfd5de;font-size:12.5px}',
-    '.seg button.on{background:#2f6fd0;border-color:#2f6fd0;color:#fff}',
+    'color:#cfd5de;font-size:12.5px;transition:background .15s}',
+    '.seg button.on{background:linear-gradient(135deg,#ff8cab,#fb7299);border-color:transparent;color:#fff;font-weight:600}',
+    // 设置分组小标题
+    '.sgrp{margin:16px 0 2px;font-size:11px;color:#7a8290;font-weight:600;letter-spacing:2px}',
+    '.sbody .sgrp:first-child{margin-top:4px}',
     '.srow .cwrap{display:flex;align-items:center;gap:10px}',
     '.srow .csz{font-style:normal;color:#8b93a1;font-size:12px}',
     '.srow .mini{height:28px;padding:0 12px;border-radius:8px;border:1px solid rgba(255,255,255,.14);',
@@ -920,15 +957,18 @@
     setEl.innerHTML =
       '<div class="hd"><h3>设置</h3><button data-a="close">完成</button></div>' +
       '<div class="sbody">' +
+      '<div class="sgrp">播 放</div>' +
       '<div class="srow"><span>自动接管网页播放器</span><b class="sw" data-k="autoTakeover"></b></div>' +
-      '<div class="srow"><span>记忆播放进度</span><b class="sw" data-k="resume"></b></div>' +
       '<div class="srow"><span>画面手势（拖动/双击/长按/音量亮度）</span><b class="sw" data-k="gestures"></b></div>' +
+      '<div class="sgrp">进 度</div>' +
+      '<div class="srow"><span>记忆播放进度</span><b class="sw" data-k="resume"></b></div>' +
       '<div class="srow col"><span>跳过片头</span><div class="seg" data-k="skipIntro">' +
       '<button data-v="0">关</button><button data-v="5">5 秒</button><button data-v="10">10 秒</button><button data-v="20">20 秒</button>' +
       '</div></div>' +
       '<div class="srow col"><span>默认倍速</span><div class="seg" data-k="speed">' +
       '<button data-v="1">1.0x</button><button data-v="1.25">1.25x</button><button data-v="1.5">1.5x</button><button data-v="2">2.0x</button>' +
       '</div></div>' +
+      '<div class="sgrp">缓 存</div>' +
       '<div class="srow"><span>边看边缓存</span><b class="sw" data-k="segCache"></b></div>' +
       '<div class="srow"><span>缓存占用</span><div class="cwrap"><i class="csz">0 MB</i>' +
       '<button data-a="clearcache" class="mini">清空</button></div></div>' +
@@ -947,8 +987,10 @@
       '<div class="spin"></div>' +
       '<div class="bigplay"><span class="bp-play">' + ICON.bigplay + '</span><span class="bp-replay">' + ICON.replay + '</span></div>' +
       '<div class="seekpreview"><b>0:00</b><i>+0:00</i><span class="bar"><em></em></span></div>' +
+      '<i class="mtrack"><b></b></i>' +
       '</div>' +
-      '<div class="top"><button data-a="close">' + ICON.back + '</button><div class="t"></div></div>' +
+      '<div class="top"><button data-a="close">' + ICON.back + '</button><div class="t"></div>' +
+      '<button data-a="full" class="mfull">' + ICON.full + '</button></div>' +
       '<div class="side">' +
       '<button data-a="dl">' + ICON.dl + '<i>下载</i></button>' +
       '<button data-a="pip">' + ICON.pip + '<i>画中画</i></button>' +
@@ -1070,7 +1112,8 @@
         knob: playerEl.querySelector('.seek .knob'),
         buf: playerEl.querySelector('.seek .buf'),
         tm: playerEl.querySelector('.tm'),
-        toggle: playerEl.querySelector('.ctlrow [data-a="toggle"]')
+        toggle: playerEl.querySelector('.ctlrow [data-a="toggle"]'),
+        mfill: playerEl.querySelector('.mtrack b')   // 小窗模式的细进度线
       };
     }
     return pctl;
@@ -1113,6 +1156,7 @@
     if (!n) return;
     n.bar.style.width = (pct * 100).toFixed(2) + '%';
     n.knob.style.left = (pct * 100).toFixed(2) + '%';
+    if (n.mfill) n.mfill.style.width = (pct * 100).toFixed(2) + '%';
 
     var end = 0;
     try {
@@ -1184,13 +1228,14 @@
     if (!playerEl) return;
     playerEl.classList.remove('hideui');
     clearTimeout(uiHideTimer);
+    var mini = playerEl.classList.contains('mini');
     uiHideTimer = setTimeout(function () {
       if (seekBusy() || seekUI.pending || menuOpen) return;   // 拖动/跳转/弹层打开时不要藏控件
-      // 只有全屏时才自动隐藏控件；嵌在网页播放框里就常驻，否则用户不知道能点
-      if (playerOpen && videoEl && !videoEl.paused && !playerEl.classList.contains('embed')) {
+      // 小窗预览快速收起，别挡画面；普通嵌入常驻（用户不知道能点）；全屏播放中 3.2 秒隐藏
+      if (playerOpen && videoEl && !videoEl.paused && (mini || !playerEl.classList.contains('embed'))) {
         playerEl.classList.add('hideui');
       }
-    }, 3200);
+    }, mini ? 1600 : 3200);
   }
 
   function fmtSpeed(n) {
@@ -1296,6 +1341,7 @@
     if (playerEl.classList.contains('embed')) {
       preFullSource = embedTarget;
       playerEl.classList.remove('embed');
+      playerEl.classList.remove('mini');
       playerEl.style.cssText = '';
       embedTarget = null;
       try {
@@ -1959,6 +2005,8 @@
       userPaused = false;
       forcedEnded = false;
       try { videoEl.playbackRate = SPEEDS[speedIdx]; } catch (e) {}
+      // 开播后重挂自动隐藏计时：小窗/全屏要在播放中把控件收起来（加载期不算）
+      if (playerOpen) showUI();
     });
 
     // 退出全屏（含系统返回手势）后，回到网页播放框原来的位置
@@ -2255,7 +2303,11 @@
       if (hasVideoEl) msg = '<b>页面里有视频，但还没拿到地址</b><br>先在页面里点一下播放，再回来看看';
       else if (hasMse) msg = '<b>这是 MSE 流，抓不到直链</b><br>可以用下面的「录制当前画面」';
       else msg = '<b>这个页面暂时没有视频</b><br>换个页面，或者点下面重新扫一次';
-      d.innerHTML = msg + '<br><button data-a="rescan" class="mini">重新扫描</button>';
+      d.innerHTML =
+        '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#565e6b" stroke-width="1.5">' +
+        '<rect x="2.6" y="4.6" width="18.8" height="14.8" rx="3.2"/>' +
+        '<path d="M10.2 9.3l5 2.7-5 2.7z" fill="#565e6b" stroke="none"/></svg>' +
+        msg + '<br><button data-a="rescan" class="mini">重新扫描</button>';
       listEl.appendChild(d);
       return;
     }
@@ -2402,6 +2454,8 @@
     if (!r || r.width < 40 || r.height < 30) return false;
     var er = embedRect(r);
     playerEl.classList.add('embed');
+    // 小窗预览：全套控件会把小画面盖死，切 mini 模式（只剩关闭/全屏小钮 + 细进度线）
+    playerEl.classList.toggle('mini', er.width < 340 || er.height < 200);
     playerEl.style.left = er.left + 'px';
     playerEl.style.top = er.top + 'px';
     playerEl.style.width = er.width + 'px';
@@ -2450,6 +2504,7 @@
       }
     } else {
       playerEl.classList.remove('embed');
+      playerEl.classList.remove('mini');
       playerEl.style.cssText = '';
       embedTarget = null;
     }
@@ -2473,6 +2528,7 @@
       var r = embedTarget.getBoundingClientRect();
       if (r.width < 40 || r.height < 30) return;
       var er = embedRect(r);
+      playerEl.classList.toggle('mini', er.width < 340 || er.height < 200);
       playerEl.style.left = er.left + 'px';
       playerEl.style.top = er.top + 'px';
       playerEl.style.width = er.width + 'px';
@@ -2505,6 +2561,7 @@
     hideFreeze();
     playerEl.classList.remove('open');
     playerEl.classList.remove('embed');
+    playerEl.classList.remove('mini');
     playerEl.style.cssText = '';
     embedTarget = null;
     try {
