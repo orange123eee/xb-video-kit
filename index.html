@@ -55,6 +55,16 @@
   </div>
 
   <div class="card">
+    <div style="font-weight:600;margin-bottom:2px">链接净化 · 直达 <span class="ver" id="cver">v—</span></div>
+    <div class="tip" style="margin:4px 0 2px">
+      去掉搜索结果 / 分享链接的中转跳转，点击直达目标；百度中转页自动秒跳，不等倒计时。
+      与视频提取器互相独立，可单独安装。
+    </div>
+    <a class="btn" href="link-cleaner.user.js">安装 / 更新 链接净化</a>
+    <div class="url" id="curl">…</div>
+  </div>
+
+  <div class="card">
     <div style="font-weight:600;margin-bottom:6px">以后怎么更新</div>
     <ol>
       <li>X浏览器会按脚本里的 <code>@updateURL</code> 定期检查，有新版本会提示。</li>
@@ -81,6 +91,15 @@
     })
     .catch(function () {});
   document.getElementById('url').textContent = location.origin + location.pathname.replace(/[^/]*$/, '') + 'video-extractor.user.js';
+  // 链接净化的版本号同样从脚本头部读
+  fetch('link-cleaner.user.js', { cache: 'no-store' })
+    .then(function (r) { return r.text(); })
+    .then(function (t) {
+      var m = t.match(/@version\s+([\w.\-]+)/);
+      if (m) document.getElementById('cver').textContent = 'v' + m[1];
+    })
+    .catch(function () {});
+  document.getElementById('curl').textContent = location.origin + location.pathname.replace(/[^/]*$/, '') + 'link-cleaner.user.js';
 </script>
 </body>
 </html>
